@@ -44,17 +44,9 @@ describe("deterministic game rules", () => {
     const project = PROJECTS[0]!;
     team.inventory.wood.B = 2000;
     team.inventory.paper.B = 1000;
-    const work = {
-      municipalityReady: true,
-      mrfReady: true,
-      brokerReady: true,
-      plannedMaterialsKg: project.requirementsKg,
-      workRevision: 0,
-    };
     const result = applyProjectClaim(
       team,
       [team, defaultTeam("b", 2)],
-      work,
       project,
       10,
       20,

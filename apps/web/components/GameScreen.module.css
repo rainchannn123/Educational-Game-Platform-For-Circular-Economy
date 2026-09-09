@@ -17,6 +17,7 @@
   --role-accent: #a96b17;
   --role-soft: #fff0cf;
 }
+
 .header {
   display: flex;
   position: sticky;
@@ -244,7 +245,7 @@
 
 .requirements,
 .queue article div,
-.dock,
+.taskActions,
 .pings {
   display: flex;
   flex-wrap: wrap;
@@ -318,10 +319,37 @@
   object-fit: contain;
 }
 
+.mrfGuide {
+  display: grid;
+  gap: 0.35rem;
+  padding: var(--space-2);
+  margin-top: var(--space-1);
+  background: #f2f8f5;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-xs);
+}
+
+.mrfGuide h4 {
+  margin: 0;
+  color: var(--color-ink-strong);
+  font-size: 0.78rem;
+}
+
+.mrfGuide p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.mrfGuide strong {
+  color: var(--color-ink-strong);
+}
+
 .workstation button,
 .purchase button,
 .pings button,
-.dock button,
+.taskActions button,
 .card button {
   padding: 0.6rem 0.8rem;
   color: var(--color-ink-strong);
@@ -339,12 +367,25 @@
 .workstation button:hover,
 .purchase button:hover,
 .pings button:hover,
-.dock button:hover,
+.taskActions button:hover,
 .card button:hover {
   background: var(--color-raised);
   border-color: var(--color-teal);
   box-shadow: 0 5px 12px rgb(27 69 61 / 0.1);
   transform: translateY(-1px);
+}
+
+.workstation button:disabled,
+.purchase button:disabled,
+.pings button:disabled,
+.taskActions button:disabled,
+.card button:disabled {
+  color: var(--color-muted);
+  background: #eef2f0;
+  border-color: var(--color-line);
+  box-shadow: none;
+  transform: none;
+  cursor: not-allowed;
 }
 
 .claim {
@@ -357,7 +398,7 @@
   border-color: var(--color-teal-strong) !important;
 }
 
-.dock {
+.taskBoard {
   display: grid;
   gap: var(--space-3);
   padding: var(--space-3);
@@ -367,8 +408,46 @@
   border-radius: var(--radius-sm);
 }
 
-.dock h3 {
+.taskBoard h3 {
   margin: 0;
+}
+
+.taskKpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.taskKpis span,
+.gaps span {
+  padding: 0.3rem 0.5rem;
+  color: var(--color-teal-strong);
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: var(--color-teal-soft);
+  border-radius: 999px;
+}
+
+.roleTasks {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.roleTasks li {
+  color: var(--color-muted);
+  font-size: 0.82rem;
+}
+
+.gaps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.taskActions {
+  align-items: flex-end;
 }
 
 .readiness {
@@ -407,6 +486,42 @@
   color: var(--color-ink);
   background: #fff;
   border: 1px solid var(--color-line-strong);
+}
+
+.historyNotes {
+  margin-top: var(--space-2);
+}
+
+.historyNotes h2 {
+  margin-bottom: var(--space-2);
+  font-size: 1rem;
+}
+
+.historyList {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.historyItem {
+  display: grid;
+  gap: 0.2rem;
+  padding: var(--space-2);
+  background: var(--color-surface-soft);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-xs);
+}
+
+.historyItem strong {
+  color: var(--color-ink-strong);
+  font-size: 0.84rem;
+}
+
+.historyItem span {
+  color: var(--color-muted);
+  font-size: 0.78rem;
 }
 
 .purchase {

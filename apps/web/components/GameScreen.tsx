@@ -43,16 +43,10 @@ export function GameScreen({
   const [notice, setNotice] = useState("");
   const [chat, setChat] = useState("");
   const [connected, setConnected] = useState(false);
-  const [selectedProjectId, setSelectedProjectId] = useState("");
   const [clock, setClock] = useState(() => Date.now());
-  const [readinessValue, setReadinessValue] = useState(
-    routeRole === "municipality"
-      ? "standard-delivery"
-      : routeRole === "mrf"
-        ? "grade-b-bundle"
-        : "recovered-first",
-  );
+  const [commandBusy, setCommandBusy] = useState(false);
   const socketRef = useRef<Socket | null>(null);
+  const sendLockRef = useRef(false);
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 1_000);
     return () => window.clearInterval(timer);
@@ -74,8 +68,26 @@ export function GameScreen({
     const socket = io(apiBase, {
       auth: { token: getToken() },
       transports: ["websocket"],
+      autoConnect: false,
+      reconnection: true,
+      reconnectionAttempts: 6,
+      reconnectionDelay: 600,
+      reconnectionDelayMax: 4000,
     });
     socketRef.current = socket;
+    const connectIfVisible = () => {
+      if (document.visibilityState === "visible" && !socket.connected)
+        socket.connect();
+    };
+    const pauseRealtime = () => {
+      if (socket.connected) socket.disconnect();
+    };
+    const handlePageHide = () => pauseRealtime();
+    const handlePageShow = () => connectIfVisible();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") pauseRealtime();
+      else connectIfVisible();
+    };
     socket.on("connect", () => {
       setConnected(true);
       socket.emit("socket.join-game", { gameId });
@@ -104,15 +116,20 @@ export function GameScreen({
       "health-mission.updated",
       "game.snapshot.required",
     ].forEach((event) => socket.on(event, sync));
-    socket.on("connect_error", () =>
-      setConnected(false),
-    );
-    socket.on("connect_error", () =>
+    socket.on("connect_error", () => {
+      setConnected(false);
       setNotice(
         "Reconnecting. Commands are disabled until the latest snapshot arrives.",
-      ),
-    );
+      );
+    });
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("pageshow", handlePageShow);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    connectIfVisible();
     return () => {
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handlePageShow);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       socket.close();
     };
   }, [gameId, queryClient]);
@@ -156,70 +173,115 @@ export function GameScreen({
   const team = data.team;
   const displayServerTime =
     data.game.serverTime + Math.max(0, clock - snapshot.dataUpdatedAt);
-  const send = async (path: string, payload: object, method = "POST") => {
+  const send = async (
+    path: string,
+    payload: object,
+    method = "POST",
+  ): Promise<boolean> => {
+    if (sendLockRef.current || commandBusy) {
+      setNotice("Previous action still processing. Please wait for confirmation.");
+      return false;
+    }
+    sendLockRef.current = true;
+    setCommandBusy(true);
+    setNotice("Submitting action...");
     try {
-      const authoritativeSnapshot = await queryClient.fetchQuery({
-        queryKey: ["snapshot", gameId],
-        queryFn: () => api<Snapshot>(`/v1/games/${gameId}/snapshot`),
-      });
+      const execute = async (retryOnStale: boolean): Promise<boolean> => {
+        try {
+          const authoritativeSnapshot = await queryClient.fetchQuery({
+            queryKey: ["snapshot", gameId],
+            queryFn: () => api<Snapshot>(`/v1/games/${gameId}/snapshot`),
+          });
 
-      if (authoritativeSnapshot.game.status === "completed") {
-        setNotice("This match has finished. Open the results screen for the debrief.");
-        return;
-      }
-      const isProjectFinalizationAction = /\/projects\/[^/]+\/(readiness|claim)$/.test(
-        path,
-      );
-      const isCommunicationAction = /\/(chat\/messages|pings)$/.test(path);
-      if (
-        authoritativeSnapshot.game.status !== "active" &&
-        !(
-          authoritativeSnapshot.game.status === "finalizing" &&
-          (isProjectFinalizationAction || isCommunicationAction)
-        )
-      ) {
-        setNotice(
-          authoritativeSnapshot.game.status === "finalizing"
-            ? "Finalization only accepts project delivery and team communication."
-            : "The match is still in briefing. Actions unlock when play begins.",
-        );
-        return;
-      }
+          if (authoritativeSnapshot.game.status === "completed") {
+            setNotice("This match has finished. Open the results screen for the debrief.");
+            return false;
+          }
+          const isProjectClaimAction = /\/projects\/[^/]+\/claim$/.test(path);
+          const isCommunicationAction = /\/(chat\/messages|pings)$/.test(path);
+          const isQuizAction = /\/health-missions\/[^/]+\/steps$/.test(path);
+          const projectPathMatch = path.match(/\/projects\/([^/]+)\//);
+          const projectId = projectPathMatch?.[1] ?? null;
+          if (
+            authoritativeSnapshot.game.status !== "active" &&
+            !(
+              authoritativeSnapshot.game.status === "finalizing" &&
+              (isProjectClaimAction || isCommunicationAction || isQuizAction)
+            )
+          ) {
+            setNotice(
+              authoritativeSnapshot.game.status === "finalizing"
+                ? "Finalization only accepts project completion, quiz responses, and team communication."
+                : "The match is still in briefing. Actions unlock when play begins.",
+            );
+            return false;
+          }
 
-      const commandPayload =
-        "expectedTeamRevision" in payload
-          ? {
-              ...payload,
-              expectedTeamRevision: authoritativeSnapshot.team.revision,
+          if (projectId && isProjectClaimAction) {
+            const project = [
+              ...(authoritativeSnapshot.projects.active ?? []),
+              ...(authoritativeSnapshot.projects.queued ?? []),
+              ...(authoritativeSnapshot.projects.preview ?? []),
+              ...(authoritativeSnapshot.projects.recentlyClosed ?? []),
+            ].find((candidate: any) => candidate._id === projectId);
+            if (!project || project.status !== "active") {
+              setNotice("This listing is no longer active. Syncing latest project rail.");
+              await queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
+              return false;
             }
-          : payload;
+          }
 
-      if (method === "PUT") {
-        const id = crypto.randomUUID();
-        await api(path, {
-          method,
-          headers: { "idempotency-key": id },
-          body: JSON.stringify({ commandId: id, ...commandPayload }),
-        });
-      } else await command(path, commandPayload);
-      setNotice("Command accepted. The city state is updating.");
-      await queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
-    } catch (error) {
-      setNotice(
-        error instanceof Error
-          ? error.message
-          : "Command could not be completed.",
-      );
+          const commandPayload =
+            "expectedTeamRevision" in payload
+              ? {
+                  ...payload,
+                  expectedTeamRevision: authoritativeSnapshot.team.revision,
+                }
+              : payload;
+
+          if (method === "PUT") {
+            const id = crypto.randomUUID();
+            await api(path, {
+              method,
+              headers: { "idempotency-key": id },
+              body: JSON.stringify({ commandId: id, ...commandPayload }),
+            });
+          } else await command(path, commandPayload);
+          setNotice("Command accepted. The city state is updating.");
+          await queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
+          return true;
+        } catch (error) {
+          const errorCode =
+            typeof error === "object" &&
+            error &&
+            "code" in error &&
+            typeof (error as { code?: unknown }).code === "string"
+              ? ((error as { code: string }).code as string)
+              : "";
+          if (retryOnStale && errorCode === "STALE_TEAM_REVISION") {
+            await queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
+            return execute(false);
+          }
+          setNotice(
+            error instanceof Error
+              ? error.message
+              : "Command could not be completed.",
+          );
+          return false;
+        }
+      };
+      return await execute(true);
+    } finally {
+      sendLockRef.current = false;
+      setCommandBusy(false);
     }
   };
-  const activeProject =
-    data.projects.active.find((project: any) => project._id === selectedProjectId) ??
-    data.projects.active[0];
-  const activeProjectWork = activeProject
-    ? data.teamProjectWork.find(
-        (work: any) => work.projectId === activeProject._id,
-      )
-    : undefined;
+  const teamLabelById = new Map<string, string>(
+    (data.publicLeaderboard ?? []).map((entry: any): [string, string] => [
+      String(entry.teamId),
+      `City ${entry.citySlot}${entry.name ? ` (${entry.name})` : ""}`,
+    ]),
+  );
   const workspaceTitle =
     routeRole === "mrf"
       ? "Materials Recovery Facility"
@@ -329,6 +391,14 @@ export function GameScreen({
                 {project.template.co2ImpactKg < 0 ? "Avoids" : "Adds"}{" "}
                 {formatTons(Math.abs(project.template.co2ImpactKg))} CO2e
               </p>
+              {project.status === "announced" && (
+                <p>
+                  Arrives in {formatCountdown(project.announcementAt, displayServerTime)}
+                </p>
+              )}
+              {project.status === "queued" && (
+                <p>Queued until one active project is claimed or expires.</p>
+              )}
               {project.status === "active" && (
                 <p data-state="urgent">
                   <img className={styles.sparkle} src={asset("leaf-sparkle")} alt="" />
@@ -337,26 +407,39 @@ export function GameScreen({
               )}
               {project.status === "active" && (
                 <button
-                  aria-pressed={activeProject?._id === project._id}
-                  onClick={() => setSelectedProjectId(project._id)}
+                  disabled={commandBusy}
+                  onClick={() =>
+                    void send(`/v1/games/${gameId}/projects/${project._id}/claim`, {
+                      expectedTeamRevision: team.revision,
+                      payload: { confirm: true },
+                    })
+                  }
                 >
-                  {activeProject?._id === project._id
-                    ? "Viewing project"
-                    : "Review this project"}
+                  {commandBusy ? "Submitting..." : "Complete Project"}
                 </button>
               )}
             </article>
           ))}
         </div>
       </section>
+      <ProjectHistoryNotes
+        projects={data.projects.recentlyClosed}
+        teamLabelById={teamLabelById}
+      />
       <div className={styles.layout}>
         <section className={`card ${styles.workstation}`}>
           <h2>{workspaceTitle}</h2>
           {routeRole === "municipality" && (
-            <Municipality team={team} gameId={gameId} send={send} />
+            <Municipality
+              team={team}
+              gameId={gameId}
+              send={send}
+              busy={commandBusy}
+              currentTime={displayServerTime}
+            />
           )}
           {routeRole === "mrf" && (
-            <Mrf team={team} gameId={gameId} send={send} />
+            <Mrf team={team} gameId={gameId} send={send} busy={commandBusy} />
           )}
           {routeRole === "broker" && (
             <Broker
@@ -365,99 +448,8 @@ export function GameScreen({
               teams={data.publicLeaderboard}
               trades={data.trades}
               send={send}
+              busy={commandBusy}
             />
-          )}
-          {activeProject && (
-            <section className={styles.dock}>
-              <h3>Project delivery dock</h3>
-               <p>
-                 {activeProject.template.title} needs all three readiness checks
-                 before Municipal submission.
-               </p>
-               <div className={styles.readiness} aria-label="Role readiness">
-                 {[
-                   ["Municipality", activeProjectWork?.municipalityReady],
-                   ["MRF", activeProjectWork?.mrfReady],
-                   ["Broker", activeProjectWork?.brokerReady],
-                 ].map(([label, complete]) => (
-                   <span key={String(label)} data-state={complete ? "complete" : "pending"}>
-                     {complete ? "Ready" : "Waiting"}: {label}
-                   </span>
-                 ))}
-               </div>
-               <button
-                onClick={() =>
-                  send(
-                    `/v1/games/${gameId}/projects/${activeProject._id}/material-plan`,
-                    {
-                      expectedWorkRevision:
-                        data.teamProjectWork.find(
-                          (work: any) => work.projectId === activeProject._id,
-                        )?.workRevision ?? 0,
-                      payload: {
-                        materials: activeProject.template.requirementsKg,
-                      },
-                    },
-                    "PUT",
-                  )
-                }
-                >
-                  Save exact material plan
-                </button>
-               <label className={styles.readinessSelect}>
-                 Your delivery decision
-                 <select
-                   value={readinessValue}
-                   onChange={(event) => setReadinessValue(event.target.value)}
-                 >
-                   {routeRole === "municipality" && (
-                     <>
-                       <option value="standard-delivery">Standard delivery</option>
-                       <option value="low-carbon-delivery">Low-carbon delivery</option>
-                     </>
-                   )}
-                   {routeRole === "mrf" && (
-                     <>
-                       <option value="grade-b-bundle">Certify grade A/B bundle</option>
-                       <option value="grade-a-bundle">Certify grade A only</option>
-                     </>
-                   )}
-                   {routeRole === "broker" && (
-                     <>
-                       <option value="recovered-first">Recovered-first plan</option>
-                       <option value="trade-supported">Trade-supported plan</option>
-                       <option value="external-supported">External-supported plan</option>
-                     </>
-                   )}
-                 </select>
-               </label>
-              <button
-                onClick={() =>
-                  send(
-                    `/v1/games/${gameId}/projects/${activeProject._id}/readiness/${routeRole}`,
-                    { payload: { value: readinessValue } },
-                  )
-                }
-              >
-                Confirm {routeRole} readiness
-              </button>
-                {routeRole === "municipality" && (
-                <button
-                  className={styles.claim}
-                  onClick={() =>
-                    send(
-                      `/v1/games/${gameId}/projects/${activeProject._id}/claim`,
-                      {
-                        expectedTeamRevision: team.revision,
-                        payload: { confirm: true },
-                      },
-                    )
-                  }
-                >
-                    Claim project atomically
-                  </button>
-                )}
-            </section>
           )}
         </section>
         <aside className="stack">
@@ -467,12 +459,15 @@ export function GameScreen({
             gameId={gameId}
             role={routeRole}
             send={send}
+            busy={commandBusy}
+            currentTime={displayServerTime}
           />
           <Communication
             gameId={gameId}
             chat={chat}
             setChat={setChat}
             send={send}
+            busy={commandBusy}
             messages={data.chatMessages ?? []}
           />
         </aside>
@@ -503,17 +498,40 @@ function Municipality({
   team,
   gameId,
   send,
+  busy,
+  currentTime,
 }: {
   team: any;
   gameId: string;
-  send: (path: string, payload: object) => void;
+  send: (path: string, payload: object, method?: string) => Promise<boolean>;
+  busy: boolean;
+  currentTime: number;
 }) {
   const availableSources = team.wasteSources.filter(
     (source: any) => source.status === "available",
   );
+  const transitSources = team.wasteSources.filter(
+    (source: any) => source.status === "in_transit",
+  );
   return (
     <>
       <div className={styles.queue}>
+        {transitSources.map((source: any) => (
+          <article key={source._id}>
+            <strong className={styles.batchTitle}>
+              <img src={asset("material-bale")} alt="" />
+              {formatTons(source.massKg)} waste batch in transit
+            </strong>
+            <span>
+              <img className={styles.timerIcon} src={asset("countdown")} alt="" />
+              Delivering to MRF in{" "}
+              {source.transitArrivesAt
+                ? formatCountdown(source.transitArrivesAt, currentTime)
+                : "0:00"}
+            </span>
+            <span className="muted">Batch is locked until arrival at MRF queue.</span>
+          </article>
+        ))}
         {availableSources.map((source: any) => (
           <article key={source._id}>
             <strong className={styles.batchTitle}>
@@ -538,8 +556,9 @@ function Municipality({
             </span>
             <div>
               <button
+                disabled={busy}
                 onClick={() =>
-                  send(`/v1/games/${gameId}/municipality/collections`, {
+                  void send(`/v1/games/${gameId}/municipality/collections`, {
                     expectedTeamRevision: team.revision,
                     payload: { wasteSourceId: source._id, route: "express" },
                   })
@@ -548,8 +567,9 @@ function Municipality({
                 Express: 6s · $0.07/kg · 0.36 CO2/kg
               </button>
               <button
+                disabled={busy}
                 onClick={() =>
-                  send(`/v1/games/${gameId}/municipality/collections`, {
+                  void send(`/v1/games/${gameId}/municipality/collections`, {
                     expectedTeamRevision: team.revision,
                     payload: { wasteSourceId: source._id, route: "standard" },
                   })
@@ -558,8 +578,9 @@ function Municipality({
                 Standard: 10s · $0.045/kg · 0.18 CO2/kg
               </button>
               <button
+                disabled={busy}
                 onClick={() =>
-                  send(`/v1/games/${gameId}/municipality/collections`, {
+                  void send(`/v1/games/${gameId}/municipality/collections`, {
                     expectedTeamRevision: team.revision,
                     payload: {
                       wasteSourceId: source._id,
@@ -584,11 +605,14 @@ function Mrf({
   team,
   gameId,
   send,
+  busy,
 }: {
   team: any;
   gameId: string;
-  send: (path: string, payload: object) => void;
+  send: (path: string, payload: object, method?: string) => Promise<boolean>;
+  busy: boolean;
 }) {
+  const guideBySource = team.mrfActionGuide ?? {};
   return (
     <>
       <div className={styles.queue}>
@@ -609,8 +633,9 @@ function Mrf({
                   (mode) => (
                     <button
                       key={mode}
+                      disabled={busy}
                       onClick={() =>
-                        send(`/v1/games/${gameId}/mrf/processes`, {
+                        void send(`/v1/games/${gameId}/mrf/processes`, {
                           expectedTeamRevision: team.revision,
                           payload: { wasteSourceId: source._id, mode },
                         })
@@ -628,6 +653,21 @@ function Mrf({
                     </button>
                   ),
                 )}
+              </div>
+              <div className={styles.mrfGuide}>
+                <h4>Action impact preview</h4>
+                {(guideBySource[source._id] ?? []).map((guide: any) => (
+                  <p key={`${source._id}-${guide.mode}`}>
+                    <strong>{String(guide.mode).toUpperCase()}</strong> · {Math.floor((guide.durationMs ?? 0) / 1000)}s ·
+                    cost {formatMoney(guide.totalCostCents ?? 0)} · CO2 {formatTons(guide.totalCO2Kg ?? 0)} ·
+                    recover {formatTons(guide.recoveredKg ?? 0)} ({((guide.recoveryRateBasisPoints ?? 0) / 100).toFixed(1)}%) ·
+                    residue {formatTons(guide.residueKg ?? 0)}
+                    {guide.grade ? ` · grade ${guide.grade}` : ""}
+                    {typeof guide.healthDelta === "number"
+                      ? ` · health ${guide.healthDelta >= 0 ? "+" : ""}${guide.healthDelta}`
+                      : ""}
+                  </p>
+                ))}
               </div>
             </article>
           ))}
@@ -647,12 +687,14 @@ function Broker({
   teams,
   trades,
   send,
+  busy,
 }: {
   team: any;
   gameId: string;
-  teams: { teamId: string; citySlot: number }[];
+  teams: { teamId: string; citySlot: number; name?: string }[];
   trades: unknown[] | undefined;
-  send: (path: string, payload: object) => void;
+  send: (path: string, payload: object, method?: string) => Promise<boolean>;
+  busy: boolean;
 }) {
   const [material, setMaterial] = useState<Material>("metal");
   const [quantity, setQuantity] = useState(1000);
@@ -704,9 +746,9 @@ function Broker({
           />
         </label>
         <button
-          disabled={!validQuantity}
+          disabled={busy || !validQuantity}
           onClick={() =>
-            send(`/v1/games/${gameId}/broker/external-purchases`, {
+            void send(`/v1/games/${gameId}/broker/external-purchases`, {
               expectedTeamRevision: team.revision,
               payload: { materialType: material, quantityKg: quantity },
             })
@@ -729,6 +771,7 @@ function Broker({
             {recipientTeams.map((candidate) => (
               <option key={candidate.teamId} value={candidate.teamId}>
                 City {candidate.citySlot}
+                {candidate.name ? ` (${candidate.name})` : ""}
               </option>
             ))}
           </select>
@@ -774,9 +817,11 @@ function Broker({
           </select>
         </label>
         <button
-          disabled={!recipientTeamId || !validQuantity || availableOfferKg < quantity}
+          disabled={
+            busy || !recipientTeamId || !validQuantity || availableOfferKg < quantity
+          }
           onClick={() =>
-            send(`/v1/games/${gameId}/broker/trades`, {
+            void send(`/v1/games/${gameId}/broker/trades`, {
               expectedTeamRevision: team.revision,
               payload: {
                 recipientTeamId,
@@ -831,8 +876,9 @@ function Broker({
                 {offer.status === "open" && incoming && (
                   <div>
                     <button
+                      disabled={busy}
                       onClick={() =>
-                        send(
+                        void send(
                           `/v1/games/${gameId}/broker/trades/${offer._id}/accept`,
                           {
                             payload: {},
@@ -843,8 +889,9 @@ function Broker({
                       Accept
                     </button>
                     <button
+                      disabled={busy}
                       onClick={() =>
-                        send(
+                        void send(
                           `/v1/games/${gameId}/broker/trades/${offer._id}/reject`,
                           {
                             payload: {},
@@ -858,8 +905,9 @@ function Broker({
                 )}
                 {offer.status === "open" && !incoming && (
                   <button
+                    disabled={busy}
                     onClick={() =>
-                      send(
+                      void send(
                         `/v1/games/${gameId}/broker/trades/${offer._id}/cancel`,
                         {
                           payload: {},
@@ -878,23 +926,90 @@ function Broker({
     </>
   );
 }
+function ProjectHistoryNotes({
+  projects,
+  teamLabelById,
+}: {
+  projects: any[];
+  teamLabelById: Map<string, string>;
+}) {
+  const recent = [...(projects ?? [])]
+    .sort(
+      (left, right) =>
+        (right.claimedAt ?? right.expiresAt ?? right.updatedAt ?? 0) -
+        (left.claimedAt ?? left.expiresAt ?? left.updatedAt ?? 0),
+    )
+    .slice(0, 12);
+  return (
+    <section className={`card ${styles.historyNotes}`}>
+      <h2>Project history notes</h2>
+      <ul className={styles.historyList}>
+        {recent.length ? (
+          recent.map((project) => {
+            const winner = project.winnerTeamId
+              ? teamLabelById.get(String(project.winnerTeamId)) ??
+                "Unknown city"
+              : "No winning city";
+            const netRevenue =
+              project.awardReceipt?.netRevenueCents ??
+              project.template?.grossRevenueCents;
+            return (
+              <li key={project._id} className={styles.historyItem}>
+                <strong>
+                  {project.template.title} ({project.status})
+                </strong>
+                <span>
+                  {project.status === "claimed"
+                    ? `${winner} completed it · net ${formatMoney(netRevenue)} · CO2 ${project.template.co2ImpactKg < 0 ? "avoids" : "adds"} ${formatTons(Math.abs(project.template.co2ImpactKg))}`
+                    : project.status === "expired"
+                      ? "Listing expired without a winner"
+                      : "Listing was cancelled by facilitator/system"}
+                </span>
+              </li>
+            );
+          })
+        ) : (
+          <li className={styles.historyItem}>
+            <strong>No closed listings yet.</strong>
+            <span>Claimed and expired projects will appear here as short audit notes.</span>
+          </li>
+        )}
+      </ul>
+    </section>
+  );
+}
 function TeamOperations({
   team,
   mission,
   gameId,
   role,
   send,
+  busy,
+  currentTime,
 }: {
   team: any;
   mission: any;
   gameId: string;
   role: Role;
-  send: (path: string, payload: object) => void;
+  send: (path: string, payload: object, method?: string) => Promise<boolean>;
+  busy: boolean;
+  currentTime: number;
 }) {
   const missionTemplate = mission
     ? HEALTH_MISSIONS.find((template) => template.id === mission.templateId)
     : undefined;
   const myStep = mission?.steps?.[role];
+  const question =
+    missionTemplate?.questions?.[role] ??
+    "Choose the best circular-economy action for your role.";
+  const secondsRemaining = mission
+    ? Math.max(0, Math.ceil((mission.expiresAt - currentTime) / 1000))
+    : 0;
+  const selectedOption = myStep
+    ? missionTemplate?.options?.[role]?.find(
+        (option) => option.key === myStep.optionKey,
+      )
+    : undefined;
   return (
     <section className="card">
       <h2>Team Operations</h2>
@@ -917,39 +1032,46 @@ function TeamOperations({
           </div>
         ))}
       </dl>
-      <h3>City Care</h3>
+      <h3>Role Quiz</h3>
       {mission ? (
         <div>
           <p>
-            <strong>{missionTemplate?.title ?? mission.templateId}</strong> needs every role before{" "}
-            {new Date(mission.expiresAt).toLocaleTimeString()}.
+            <strong>{missionTemplate?.title ?? mission.templateId}</strong>
           </p>
           <p className="muted">
-            {missionTemplate?.explanation ?? "Choose the circular response that best protects city wellbeing."}
+            {question}
+          </p>
+          <p className="muted">
+            Answer in {secondsRemaining}s. Correct answer boosts city health; wrong answer reduces it.
           </p>
           {myStep ? (
-            <p className="muted">Your role has submitted a City Care response.</p>
+            <p className="muted">
+              Your answer is submitted{selectedOption ? `: ${selectedOption.label}` : ""}. Waiting for teammates.
+            </p>
           ) : (
             <div className={styles.missionChoices}>
-              {missionTemplate?.options[role].map((option) => (
+              {missionTemplate?.options?.[role]?.map((option) => (
                 <button
                   key={option.key}
+                  disabled={busy}
                   onClick={() =>
-                    send(
+                    void send(
                       `/v1/games/${gameId}/health-missions/${mission._id}/steps`,
                       { payload: { optionKey: option.key } },
                     )
                   }
                 >
                   {option.label}
-                  {option.highImpact ? " · +impact" : ""}
                 </button>
               ))}
+              {!missionTemplate?.options?.[role]?.length && (
+                <p className="muted">Quiz options are synchronizing...</p>
+              )}
             </div>
           )}
         </div>
       ) : (
-        <p className="muted">No unresolved City Care mission.</p>
+        <p className="muted">Preparing your next 20-second role quiz...</p>
       )}
     </section>
   );
@@ -959,12 +1081,14 @@ function Communication({
   chat,
   setChat,
   send,
+  busy,
   messages,
 }: {
   gameId: string;
   chat: string;
   setChat: (value: string) => void;
-  send: (path: string, payload: object) => void;
+  send: (path: string, payload: object, method?: string) => Promise<boolean>;
+  busy: boolean;
   messages: Array<{ _id: string; senderRole: string; content: string; createdAtMs: number }>;
 }) {
   return (
@@ -981,8 +1105,9 @@ function Communication({
         ].map((type) => (
           <button
             key={type}
+            disabled={busy}
             onClick={() =>
-              send(`/v1/games/${gameId}/pings`, { payload: { type } })
+              void send(`/v1/games/${gameId}/pings`, { payload: { type } })
             }
           >
             {type.replace("-", " ")}
@@ -1011,9 +1136,9 @@ function Communication({
         )}
       </div>
       <button
-        disabled={!chat.trim()}
+        disabled={busy || !chat.trim()}
         onClick={() => {
-          send(`/v1/games/${gameId}/chat/messages`, {
+          void send(`/v1/games/${gameId}/chat/messages`, {
             payload: { channel: "team", message: chat },
           });
           setChat("");

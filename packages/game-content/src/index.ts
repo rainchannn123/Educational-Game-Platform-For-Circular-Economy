@@ -31,6 +31,7 @@ export interface HealthMissionTemplate {
   id: string;
   title: string;
   explanation: string;
+  questions: Record<Role, string>;
   options: Record<Role, HealthOption[]>;
 }
 
@@ -309,112 +310,584 @@ export const PROJECTS: ProjectTemplate[] = [
     "Sharing reduces demand for new products.",
   ),
 ];
-const options = (appropriate: string, highImpact: string): HealthOption[] => [
-  {
-    key: appropriate,
-    label: "Effective circular response",
-    appropriate: true,
-    highImpact: false,
-  },
-  {
-    key: `high-impact-${highImpact}`,
-    label: "High-impact circular response",
-    appropriate: true,
-    highImpact: true,
-  },
-  {
-    key: `delay-${appropriate}`,
-    label: "Delay action until later",
-    appropriate: false,
-    highImpact: false,
-  },
-];
 export const HEALTH_MISSIONS: HealthMissionTemplate[] = [
   {
     id: "H01",
-    title: "Source Separation Campaign",
-    explanation:
-      "Better source separation reduces contamination and improves recovery.",
+    title: "Urgent Collection Triage",
+    explanation: "Fast role decisions prevent loss and protect recovery quality.",
+    questions: {
+      municipality:
+        "A mixed batch will expire in 20s. What should Municipality do first?",
+      mrf: "A medium-contamination batch just arrived. Which processing mode is best by default?",
+      broker: "Team is short 2t metal for an active listing. What is the best broker move?",
+    },
     options: {
-      municipality: options(
-        "target-residential-mixed",
-        "target-residential-mixed",
-      ),
-      mrf: options("sorting-guidance", "sorting-guidance"),
-      broker: options("fund-reusable-signage", "fund-reusable-signage"),
+      municipality: [
+        {
+          key: "dispatch-now-standard",
+          label: "Dispatch standard route now",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "wait-next-wave",
+          label: "Wait for next wave",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "ignore-expiry",
+          label: "Ignore until expired",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      mrf: [
+        {
+          key: "balanced-first-pass",
+          label: "Run balanced mode",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "landfill-direct",
+          label: "Landfill immediately",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "hold-forever",
+          label: "Hold without review",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      broker: [
+        {
+          key: "accept-fair-metal-trade",
+          label: "Secure fair metal trade",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "buy-random-material",
+          label: "Buy unrelated material",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "do-nothing-shortage",
+          label: "Do nothing",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
     },
   },
   {
     id: "H02",
-    title: "Illegal Dumping Response",
-    explanation:
-      "Documented, low-carbon recovery protects public trust and environmental quality.",
+    title: "Contamination Spike",
+    explanation: "Quality control decisions determine downstream claim success.",
+    questions: {
+      municipality:
+        "Community bins show contamination spike. Which municipal action is best?",
+      mrf: "Incoming batch has high contamination. Which MRF choice preserves recoverable value?",
+      broker: "Buyers ask for proof of grade quality. What should Broker do?",
+    },
     options: {
-      municipality: options("documented-collection", "documented-collection"),
-      mrf: options("separate-hazardous", "separate-hazardous"),
-      broker: options("low-carbon-contractor", "low-carbon-contractor"),
+      municipality: [
+        {
+          key: "issue-targeted-guidance",
+          label: "Issue targeted sorting guidance",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "hide-data",
+          label: "Hide contamination data",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "pause-all-pickups",
+          label: "Pause all pickups",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      mrf: [
+        {
+          key: "quality-mode-then-grade",
+          label: "Use quality mode then grade",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "rapid-no-check",
+          label: "Rapid mode no checks",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "mix-with-clean-stock",
+          label: "Mix with clean stock",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      broker: [
+        {
+          key: "share-grade-certificates",
+          label: "Share grade certificates",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "promise-no-proof",
+          label: "Promise without proof",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "discount-everything",
+          label: "Discount all offers",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
     },
   },
   {
     id: "H03",
-    title: "Repair and Reuse Pop-up",
-    explanation:
-      "Repair and reuse retain products and materials in service longer.",
+    title: "Route Emissions Choice",
+    explanation: "Low-carbon logistics improve long-term score multipliers.",
+    questions: {
+      municipality:
+        "Two routes can deliver in time. Which route strategy is most circular?",
+      mrf: "Queue is stable and deadline allows it. Which processing option should MRF prefer?",
+      broker: "You can source materials via local trade or costly external wholesale. Best first choice?",
+    },
     options: {
-      municipality: options("accessible-drop-off", "accessible-drop-off"),
-      mrf: options("identify-repairable", "identify-repairable"),
-      broker: options("fund-repair-partner", "fund-repair-partner"),
+      municipality: [
+        {
+          key: "choose-lower-co2-route",
+          label: "Use lower CO2 route",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "always-express",
+          label: "Always choose express",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "skip-dispatch",
+          label: "Skip dispatch",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      mrf: [
+        {
+          key: "balanced-or-quality-fit",
+          label: "Balanced or quality mode",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "landfill-to-save-time",
+          label: "Landfill to save time",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "hold-all-batches",
+          label: "Hold every batch",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      broker: [
+        {
+          key: "prioritize-local-trade",
+          label: "Prioritize local trade",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "external-only",
+          label: "Use external only",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "delay-all-buying",
+          label: "Delay all buying",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
     },
   },
   {
     id: "H04",
-    title: "Overflowing Collection Zone",
-    explanation: "Reliable collection prevents service failures.",
+    title: "Inventory Bottleneck",
+    explanation: "Coordinated handoffs avoid queue lock and missed listings.",
+    questions: {
+      municipality: "MRF queue is filling up. What should Municipality do next?",
+      mrf: "Queue is near cap with one urgent batch. What is the best MRF prioritization?",
+      broker: "Inventory has surplus glass but metal shortage. Best broker action?",
+    },
     options: {
-      municipality: options("consolidated-route", "consolidated-route"),
-      mrf: options("balanced-capacity", "balanced-capacity"),
-      broker: options("route-optimization", "route-optimization"),
+      municipality: [
+        {
+          key: "stagger-dispatch-based-on-queue",
+          label: "Stagger dispatch by queue",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "dump-all-at-once",
+          label: "Dispatch all at once",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "pause-collections-long",
+          label: "Pause collections entirely",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      mrf: [
+        {
+          key: "process-urgent-then-balanced",
+          label: "Process urgent then balanced",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "first-in-no-exceptions",
+          label: "Strict first-in order",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "landfill-oldest-batch",
+          label: "Landfill oldest batch",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      broker: [
+        {
+          key: "trade-surplus-for-shortage",
+          label: "Trade surplus for metal",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "hoard-surplus",
+          label: "Hoard surplus stock",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "sell-surplus-for-cash-only",
+          label: "Sell surplus cash-only",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
     },
   },
   {
     id: "H05",
-    title: "Recycling Quality Audit",
-    explanation: "Quality determines whether material can re-enter use.",
+    title: "Public Quality Audit",
+    explanation: "Traceability and grading discipline protect project success.",
+    questions: {
+      municipality: "Auditor asks for source records. Best municipal response?",
+      mrf: "Auditor checks grading consistency. Best MRF response?",
+      broker: "Buyer asks origin and quality proof. Best broker response?",
+    },
     options: {
-      municipality: options("source-feedback", "source-feedback"),
-      mrf: options("sample-contamination", "sample-contamination"),
-      broker: options("needed-qa-supplies", "needed-qa-supplies"),
+      municipality: [
+        {
+          key: "share-documented-source-logs",
+          label: "Share source logs",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "estimate-from-memory",
+          label: "Estimate from memory",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "refuse-audit",
+          label: "Refuse the audit",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      mrf: [
+        {
+          key: "show-sampling-records",
+          label: "Show sampling records",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "skip-grading-details",
+          label: "Skip grading details",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "relabel-without-check",
+          label: "Relabel without checks",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      broker: [
+        {
+          key: "provide-traceability-pack",
+          label: "Provide traceability pack",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "promise-later-docs",
+          label: "Promise docs later",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "drop-grade-requirement",
+          label: "Drop grade requirement",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
     },
   },
   {
     id: "H06",
-    title: "Public Procurement Check",
-    explanation:
-      "Circular procurement requires traceability and appropriate standards.",
+    title: "Procurement Pressure",
+    explanation: "Under time pressure, choose options that preserve circular value.",
+    questions: {
+      municipality: "A supplier offers fast virgin materials. Best municipal choice?",
+      mrf: "You can output higher quantity low-grade or lower quantity high-grade. Best for active projects?",
+      broker: "A trade partner proposes unfair terms far outside value range. Best response?",
+    },
     options: {
-      municipality: options("recycled-content-plan", "recycled-content-plan"),
-      mrf: options("confirm-traceability", "confirm-traceability"),
-      broker: options("transparent-source", "transparent-source"),
+      municipality: [
+        {
+          key: "prioritize-recovered-stock",
+          label: "Prioritize recovered stock",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "buy-virgin-by-default",
+          label: "Buy virgin by default",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "cancel-project-pipeline",
+          label: "Cancel project pipeline",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      mrf: [
+        {
+          key: "target-usable-grade-a-b",
+          label: "Target usable grade A/B",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "maximize-quantity-grade-c",
+          label: "Max quantity grade C",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "skip-grading-entirely",
+          label: "Skip grading entirely",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      broker: [
+        {
+          key: "reject-unfair-and-requote",
+          label: "Reject and re-quote fair",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "accept-any-terms",
+          label: "Accept any terms",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "ghost-trade-partner",
+          label: "Ignore all partners",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
     },
   },
   {
     id: "H07",
-    title: "Reuse Exchange Day",
-    explanation: "Sharing and reuse can avoid waste generation.",
+    title: "Cross-Team Coordination",
+    explanation: "Well-timed communication and transfers maximize city performance.",
+    questions: {
+      municipality: "MRF asks for cleaner inflow. What should Municipality do now?",
+      mrf: "Broker reports urgent shortage for a live listing. Best MRF action?",
+      broker: "Municipality and MRF are ready but one material is missing. Best Broker action?",
+    },
     options: {
-      municipality: options("exchange-point", "exchange-point"),
-      mrf: options("reuse-first", "reuse-first"),
-      broker: options("community-partner", "community-partner"),
+      municipality: [
+        {
+          key: "prioritize-cleanest-batches",
+          label: "Prioritize cleaner batches",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "send-random-order",
+          label: "Send random order",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "withhold-all-batches",
+          label: "Withhold all batches",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      mrf: [
+        {
+          key: "prioritize-needed-material-recovery",
+          label: "Prioritize needed materials",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "process-least-useful-first",
+          label: "Process least useful first",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "pause-until-next-cycle",
+          label: "Pause until next cycle",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      broker: [
+        {
+          key: "close-gap-with-best-source",
+          label: "Close gap with best source",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "wait-for-market-later",
+          label: "Wait for later market",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "buy-unneeded-cheap-lot",
+          label: "Buy cheap unneeded lot",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
     },
   },
   {
     id: "H08",
-    title: "Construction Waste Prevention",
-    explanation: "Prevention and recovery reduce construction waste.",
+    title: "Final Minute Strategy",
+    explanation: "Near listing deadline, strategic circular choices matter most.",
+    questions: {
+      municipality: "Only one dispatch remains before expiry. Best municipal priority?",
+      mrf: "One batch can be processed before listing expiry. Best MRF choice?",
+      broker: "Only 15s remain and team needs 1t paper. Best broker action?",
+    },
     options: {
-      municipality: options("source-separation", "source-separation"),
-      mrf: options("isolate-materials", "isolate-materials"),
-      broker: options("reusable-collection", "reusable-collection"),
+      municipality: [
+        {
+          key: "dispatch-batch-that-fills-gap",
+          label: "Dispatch gap-filling batch",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "dispatch-largest-random",
+          label: "Dispatch largest random",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "skip-last-dispatch",
+          label: "Skip final dispatch",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      mrf: [
+        {
+          key: "process-high-likelihood-success",
+          label: "Process highest success batch",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "process-highest-contamination",
+          label: "Process dirtiest batch",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "hold-instead-of-process",
+          label: "Hold instead of process",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
+      broker: [
+        {
+          key: "use-fastest-valid-source",
+          label: "Use fastest valid source",
+          appropriate: true,
+          highImpact: true,
+        },
+        {
+          key: "negotiate-long-contract",
+          label: "Negotiate long contract",
+          appropriate: false,
+          highImpact: false,
+        },
+        {
+          key: "do-nothing-last-seconds",
+          label: "Do nothing",
+          appropriate: false,
+          highImpact: false,
+        },
+      ],
     },
   },
 ];
@@ -438,9 +911,9 @@ export const STANDARD_SCENARIO = {
   wasteVisibleCap: 4,
   wasteExpiryMs: 55_000,
   mrfQueueCap: 3,
-  healthMissionMs: 60_000,
-  firstHealthMissionMs: 50_000,
-  healthDeadlineMs: 50_000,
+  healthMissionMs: 20_000,
+  firstHealthMissionMs: 0,
+  healthDeadlineMs: 20_000,
   tradeExpiryMs: 25_000,
   standardTradeMs: 8_000,
   lowCarbonTradeMs: 15_000,

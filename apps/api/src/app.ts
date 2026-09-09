@@ -25,7 +25,12 @@ import {
   readinessSchema,
 } from "@circular-city/contracts";
 import { PROJECTS, STANDARD_SCENARIO } from "@circular-city/game-content";
-import { defaultTeam, RuleError } from "@circular-city/game-engine";
+import {
+  calculateProcessing,
+  defaultTeam,
+  materialKeys,
+  RuleError,
+} from "@circular-city/game-engine";
 import { requireAuth, requirePrivilege, signToken } from "./auth.js";
 import { readEnv, type Env } from "./env.js";
 import {
@@ -63,6 +68,71 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 const service = new GameService();
+const mrfDurationsMs = {
+  rapid: 6000,
+  balanced: 10_000,
+  quality: 14_000,
+  hold: 30_000,
+  landfill: 4000,
+} as const;
+const mrfGuideForSource = (source: any) => {
+  const modes = ["rapid", "balanced", "quality", "landfill"] as const;
+  const guidance: Array<{
+    mode: "rapid" | "balanced" | "quality" | "landfill" | "hold";
+    durationMs: number;
+    grade: "A" | "B" | "C" | null;
+    recoveredKg: number;
+    residueKg: number;
+    recoveryRateBasisPoints: number;
+    processingCostCents: number;
+    residueCostCents: number;
+    totalCostCents: number;
+    processingCO2Kg: number;
+    residueCO2Kg: number;
+    totalCO2Kg: number;
+    healthDelta: number;
+  }> = modes.map((mode) => {
+    const result = calculateProcessing(source, mode);
+    const recoveredKg = materialKeys.reduce(
+      (sum, material) => sum + result.outputKg[material],
+      0,
+    );
+    return {
+      mode,
+      durationMs: mrfDurationsMs[mode],
+      grade: result.grade,
+      recoveredKg,
+      residueKg: result.residueKg,
+      recoveryRateBasisPoints: Math.max(
+        0,
+        Math.floor((recoveredKg * 10_000) / Math.max(1, source.massKg)),
+      ),
+      processingCostCents: result.processingCostCents,
+      residueCostCents: result.residueCostCents,
+      totalCostCents: result.processingCostCents + result.residueCostCents,
+      processingCO2Kg: result.processingCO2Kg,
+      residueCO2Kg: result.residueCO2Kg,
+      totalCO2Kg: result.processingCO2Kg + result.residueCO2Kg,
+      healthDelta: result.healthDelta,
+    };
+  });
+  guidance.push({
+    mode: "hold",
+    durationMs: mrfDurationsMs.hold,
+    grade: null,
+    recoveredKg: 0,
+    residueKg: source.massKg,
+    recoveryRateBasisPoints: 0,
+    processingCostCents: 0,
+    residueCostCents: 0,
+    totalCostCents: 0,
+    processingCO2Kg: 0,
+    residueCO2Kg: 0,
+    totalCO2Kg: 0,
+    healthDelta: 0,
+  });
+  return guidance;
+};
 
 const code = (): string =>
   randomBytes(4).toString("hex").slice(0, 6).toUpperCase();
@@ -601,6 +671,7 @@ export const createApp = (env: Env = readEnv()): express.Express => {
          configSnapshot: STANDARD_SCENARIO,
          status: "active",
          startedAt: start,
+         activeStartedAt: start,
          activeEndsAt: start + STANDARD_SCENARIO.activeMs,
          finalizationEndsAt:
            start + STANDARD_SCENARIO.activeMs + STANDARD_SCENARIO.finalizationMs,
@@ -665,7 +736,7 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         teamId: membership.state.teamId,
         status: "open",
       }).lean();
-       const [wasteSources, jobs, mission, trades, leaderboard, chatMessages] =
+      const [wasteSources, jobs, mission, trades, leaderboard, chatMessages] =
          await Promise.all([
           mongoose
             .model("WasteSource")
@@ -720,8 +791,16 @@ export const createApp = (env: Env = readEnv()): express.Express => {
            })
              .sort({ createdAtMs: -1 })
              .limit(50)
-             .lean(),
-        ]);
+            .lean(),
+         ]);
+      const teamNameDocs = await Team.find({
+        _id: { $in: leaderboard.map((entry) => entry.teamId) },
+      })
+        .select("name")
+        .lean();
+      const teamNameById = new Map(
+        teamNameDocs.map((entry) => [String(entry._id), entry.name]),
+      );
       response.json({
         success: true,
         data: {
@@ -743,6 +822,11 @@ export const createApp = (env: Env = readEnv()): express.Express => {
             wasteSources,
             activeJobs: jobs,
             currentHealthMission: mission,
+            mrfActionGuide: Object.fromEntries(
+              wasteSources
+                .filter((source: any) => ["at_mrf", "held"].includes(source.status))
+                .map((source: any) => [source._id, mrfGuideForSource(source)]),
+            ),
           },
           projects: {
             preview: projects.filter(
@@ -754,12 +838,17 @@ export const createApp = (env: Env = readEnv()): express.Express => {
               .filter((project) =>
                 ["claimed", "expired", "cancelled"].includes(project.status),
               )
-              .slice(-8),
+              .slice(-24),
           },
-           teamProjectWork: work,
-           trades,
-           chatMessages: chatMessages.reverse(),
-           publicLeaderboard: leaderboard,
+            teamProjectWork: work,
+            trades,
+            chatMessages: chatMessages.reverse(),
+            publicLeaderboard: leaderboard.map((entry) => ({
+              ...entry,
+              name:
+                teamNameById.get(String(entry.teamId)) ??
+                `City ${entry.citySlot ?? "?"}`,
+            })),
         },
       });
     } catch (error) {

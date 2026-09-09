@@ -18,3 +18,6 @@ Circular City Rush is a server-authoritative real-time learning game for teams o
 `pnpm validate:env`, `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm test:integration`, and `pnpm test:e2e`.
 
 See `docs/architecture/overview.md`, `docs/operations/runbook.md`, and `docs/testing/test-matrix.md`.
+
+corepack pnpm --filter @circular-city/worker dev
+corepack pnpm --filter @circular-city/api dev

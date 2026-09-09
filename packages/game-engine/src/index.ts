@@ -378,7 +378,6 @@ export function consumeProjectMaterials(
 
 export function assertClaimEligible(
   team: TeamState,
-  work: ProjectWork,
   project: ProjectTemplate,
   now: number,
   expiresAt: number,
@@ -386,29 +385,19 @@ export function assertClaimEligible(
   if (team.status === "withdrawn") throw new RuleError("TEAM_WITHDRAWN");
   if (team.health < 20) throw new RuleError("HEALTH_TOO_LOW_TO_CLAIM");
   if (now > expiresAt) throw new RuleError("PROJECT_NOT_ACTIVE");
-  if (!work.municipalityReady || !work.mrfReady || !work.brokerReady)
-    throw new RuleError("PROJECT_REQUIREMENTS_NOT_MET");
-  if (
-    materialKeys.some(
-      (material) =>
-        work.plannedMaterialsKg[material] !== project.requirementsKg[material],
-    )
-  )
-    throw new RuleError("PROJECT_REQUIREMENTS_NOT_MET");
   consumeProjectMaterials(team.inventory, project.requirementsKg);
 }
 
 export function applyProjectClaim(
   team: TeamState,
   teams: TeamState[],
-  work: ProjectWork,
   project: ProjectTemplate,
   now: number,
   expiresAt: number,
   expectedRevision: number,
 ): { team: TeamState; receipt: Co2Receipt } {
   assertRevision(team, expectedRevision);
-  assertClaimEligible(team, work, project, now, expiresAt);
+  assertClaimEligible(team, project, now, expiresAt);
   const receipt = calculateCo2Receipt(team, teams, project.grossRevenueCents);
   const next = structuredClone(team);
   next.inventory = consumeProjectMaterials(
@@ -496,10 +485,12 @@ export function healthMissionDelta(
   const appropriateCount = selected.filter(
     (option) => option?.appropriate,
   ).length;
-  const highImpact = selected.every((option) => option?.highImpact);
-  const baseDeltas = [3, 3, 5, 8] as const;
+  const wrongCount = selected.length - appropriateCount;
+  const highImpact = selected.every(
+    (option) => option?.appropriate && option?.highImpact,
+  );
   return {
-    delta: baseDeltas[appropriateCount]! + (highImpact ? 2 : 0),
+    delta: appropriateCount * 3 - wrongCount * 2 + (highImpact ? 1 : 0),
     appropriateCount,
     highImpact,
   };

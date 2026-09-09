@@ -366,6 +366,7 @@ export class GameService {
     });
     if (queueCount >= 3) throw new RuleError("MRF_QUEUE_FULL");
     const quote = calculateCollection(source as any, route);
+    const arrivesAt = now() + quote.durationMs;
     if (this.spendableWallet(state) < quote.costCents)
       throw new RuleError("INSUFFICIENT_WALLET");
     const session = await mongoose.startSession();
@@ -390,7 +391,12 @@ export class GameService {
         if (!changed.modifiedCount) throw new RuleError("STALE_TEAM_REVISION");
         const sourceChanged = await WasteSource.updateOne(
           { _id: wasteSourceId, status: "available" },
-          { $set: { status: "in_transit" } },
+          {
+            $set: {
+              status: "in_transit",
+              transitArrivesAt: arrivesAt,
+            },
+          },
           { session },
         );
         if (!sourceChanged.modifiedCount)
@@ -402,7 +408,7 @@ export class GameService {
               teamId: state.teamId,
               wasteSourceId,
               route,
-              arrivesAt: now() + quote.durationMs,
+              arrivesAt,
             },
           ],
           { session },
@@ -428,7 +434,7 @@ export class GameService {
           {
             wasteSourceId,
             status: "in_transit",
-            arrivesAt: now() + quote.durationMs,
+            arrivesAt,
           },
           session,
         );
@@ -768,7 +774,6 @@ export class GameService {
     expectedRevision: number,
   ): Promise<CommandResult> {
     const membership = await this.member(gameId, userId);
-    this.assertRole(membership.role, "municipality");
     const session = await mongoose.startSession();
     let result: CommandResult | undefined;
     try {
@@ -803,19 +808,9 @@ export class GameService {
         const teams = await GameTeamState.find({ gameId })
           .session(session)
           .lean();
-        const work = await ProjectWork.findOne({
-          projectId,
-          teamId: membership.state.teamId,
-          status: "open",
-        })
-          .session(session)
-          .lean();
-        if (!work) throw new RuleError("PROJECT_REQUIREMENTS_NOT_MET");
-        this.assertProjectReadiness(teamDoc, work, project);
         const applied = applyProjectClaim(
           plain(teamDoc) as TeamState,
           teams.map((team) => plain(team) as TeamState),
-          plain(work) as any,
           project.template,
           now(),
           project.expiresAt,
@@ -1299,7 +1294,7 @@ export class GameService {
       if (completed.modifiedCount) {
         const team = await GameTeamState.findById(membership.state._id).lean();
         if (team) {
-          const health = Math.min(100, team.health + outcome.delta);
+          const health = Math.max(0, Math.min(100, team.health + outcome.delta));
           await GameTeamState.updateOne(
             { _id: team._id },
             {

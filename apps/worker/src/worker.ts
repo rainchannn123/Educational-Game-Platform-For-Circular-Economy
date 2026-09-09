@@ -84,6 +84,16 @@ const activity = async (
 };
 const seeded = (seed: number, cursor: number): number =>
   ((seed * 1103515245 + cursor * 12345) >>> 0) % 10000;
+const inferActiveStartAt = (game: any): number => {
+  if (typeof game.activeStartedAt === "number") return game.activeStartedAt;
+  if (
+    typeof game.startedAt === "number" &&
+    typeof game.activeEndsAt === "number" &&
+    game.activeEndsAt - game.startedAt > STANDARD_SCENARIO.activeMs
+  )
+    return game.startedAt + STANDARD_SCENARIO.briefingMs;
+  return typeof game.startedAt === "number" ? game.startedAt : now();
+};
 
 async function ensureInitialProject(game: any): Promise<void> {
   const gameId = String(game._id);
@@ -99,30 +109,42 @@ async function ensureInitialProject(game: any): Promise<void> {
     }
     return;
   }
-  const activeAt = game.startedAt + STANDARD_SCENARIO.briefingMs;
+  const activeAt = inferActiveStartAt(game);
   const template = projectForSequence(game.seed, 1);
-  const project = await GameProject.create({
-    gameId,
-    sequence: 1,
-    templateId: template.id,
-    template,
-    status: "active",
-    previewAt: activeAt,
-    announcementAt: activeAt,
-    activeAt,
-    expiresAt: activeAt + template.activeDurationMs,
-  });
+  let project = await GameProject.findOne({ gameId, sequence: 1 }).lean();
+  if (!project)
+    try {
+      project = await GameProject.create({
+        gameId,
+        sequence: 1,
+        templateId: template.id,
+        template,
+        status: "active",
+        previewAt: activeAt,
+        announcementAt: activeAt,
+        activeAt,
+        expiresAt: activeAt + template.activeDurationMs,
+      });
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) throw error;
+      project = await GameProject.findOne({ gameId, sequence: 1 }).lean();
+    }
+  if (!project) return;
   await Game.updateOne(
     { _id: game._id },
     { $set: { projectCursor: 1, projectPreviewCursor: 1 } },
   );
   game.projectCursor = 1;
   game.projectPreviewCursor = 1;
-  await activity(gameId, undefined, "project.announced", {
+    await activity(gameId, undefined, "project.announced", {
     projectId: String(project._id),
     sequence: 1,
   });
-  await due(gameId, "project.announced", { project: project.toObject() });
+  const projectPayload =
+    typeof (project as any).toObject === "function"
+      ? (project as any).toObject()
+      : project;
+  await due(gameId, "project.announced", { project: projectPayload });
 }
 
 async function spawnWaste(game: any, tickIndex: number): Promise<void> {
@@ -258,6 +280,7 @@ async function advanceGame(game: any): Promise<void> {
     const activeStarts = game.startedAt + STANDARD_SCENARIO.briefingMs;
     if (current >= activeStarts) {
       game.status = "active";
+      game.activeStartedAt = activeStarts;
       game.activeEndsAt = activeStarts + STANDARD_SCENARIO.activeMs;
       game.finalizationEndsAt =
         game.activeEndsAt + STANDARD_SCENARIO.finalizationMs;
@@ -355,9 +378,13 @@ async function advanceGame(game: any): Promise<void> {
     return;
   }
   if (game.status !== "active") return;
+  const activeStartedAt = inferActiveStartAt(game);
+  if (game.activeStartedAt !== activeStartedAt) {
+    game.activeStartedAt = activeStartedAt;
+    await game.save();
+  }
   await ensureInitialProject(game);
-  const activeElapsed =
-    current - (game.startedAt + STANDARD_SCENARIO.briefingMs);
+  const activeElapsed = current - activeStartedAt;
   let nextPreviewSequence = (game.projectPreviewCursor ?? 1) + 1;
   let nextAnnouncementAt =
     (nextPreviewSequence - 1) * STANDARD_SCENARIO.projectAnnounceMs;
@@ -368,20 +395,37 @@ async function advanceGame(game: any): Promise<void> {
     nextAnnouncementAt < STANDARD_SCENARIO.stopAnnouncementsMs
   ) {
     const template = projectForSequence(game.seed, nextPreviewSequence);
-    const project = await GameProject.create({
+    let project = await GameProject.findOne({
       gameId: String(game._id),
       sequence: nextPreviewSequence,
-      templateId: template.id,
-      template,
-      status: "announced",
-      previewAt: game.startedAt + STANDARD_SCENARIO.briefingMs + nextPreviewAt,
-      announcementAt:
-        game.startedAt + STANDARD_SCENARIO.briefingMs + nextAnnouncementAt,
-    });
+    }).lean();
+    if (!project)
+      try {
+        project = await GameProject.create({
+          gameId: String(game._id),
+          sequence: nextPreviewSequence,
+          templateId: template.id,
+          template,
+          status: "announced",
+          previewAt: activeStartedAt + nextPreviewAt,
+          announcementAt: activeStartedAt + nextAnnouncementAt,
+        });
+      } catch (error) {
+        if ((error as { code?: number }).code !== 11000) throw error;
+        project = await GameProject.findOne({
+          gameId: String(game._id),
+          sequence: nextPreviewSequence,
+        }).lean();
+      }
+    if (!project) break;
     game.projectPreviewCursor = nextPreviewSequence;
     createdPreview = true;
+    const projectPayload =
+      typeof (project as any).toObject === "function"
+        ? (project as any).toObject()
+        : project;
     await due(String(game._id), "project.previewed", {
-      project: project.toObject(),
+      project: projectPayload,
     });
     nextPreviewSequence += 1;
     nextAnnouncementAt =
@@ -477,8 +521,7 @@ async function advanceGame(game: any): Promise<void> {
         status: { $ne: "withdrawn" },
       }).lean();
       const scheduledAt =
-        game.startedAt +
-        STANDARD_SCENARIO.briefingMs +
+        activeStartedAt +
         STANDARD_SCENARIO.firstHealthMissionMs +
         missionSlot * STANDARD_SCENARIO.healthMissionMs;
       for (const state of states) {
@@ -530,7 +573,10 @@ async function settleDueEntities(): Promise<void> {
     if (!changed.modifiedCount) continue;
     await WasteSource.updateOne(
       { _id: transport.wasteSourceId, status: "in_transit" },
-      { $set: { status: "at_mrf", queueArrivedAt: current } },
+      {
+        $set: { status: "at_mrf", queueArrivedAt: current },
+        $unset: { transitArrivesAt: 1 },
+      },
     );
     await due(
       transport.gameId,
