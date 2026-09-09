@@ -1,0 +1,84 @@
+.eyebrow {
+  color: var(--color-teal);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+.form {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-end;
+  max-width: 40rem;
+}
+.form label {
+  display: grid;
+  gap: var(--space-1);
+  flex: 1;
+}
+.form input {
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  color: var(--color-ink);
+  padding: 0.65rem;
+}
+.form button,
+.controls button {
+  border: 0;
+  background: var(--color-teal);
+  color: #052128;
+  padding: 0.65rem 0.8rem;
+  font-weight: 800;
+}
+.controls {
+  display: flex;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+.controls .end {
+  background: var(--color-coral);
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.table {
+  display: grid;
+  gap: var(--space-2);
+}
+.table div {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--color-line);
+  padding: var(--space-2) 0;
+}
+.events {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+.events li {
+  display: grid;
+  grid-template-columns: 7rem 1.5fr 1fr;
+  gap: var(--space-3);
+}
+@media (max-width: 700px) {
+  .form,
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+  .table {
+    overflow-x: auto;
+  }
+  .table div {
+    min-width: 36rem;
+  }
+  .events li {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
+  }
+}

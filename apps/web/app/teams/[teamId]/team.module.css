@@ -1,0 +1,88 @@
+.header {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+.eyebrow,
+.role {
+  color: var(--color-teal);
+  font-weight: 800;
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+}
+.roles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-4);
+}
+.roles button,
+.checklist button {
+  background: var(--color-teal);
+  border: 0;
+  color: #052128;
+  font-weight: 800;
+  padding: 0.75rem;
+  width: 100%;
+}
+.checklist {
+  margin-top: var(--space-5);
+}
+.readinessGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+}
+.readinessMember {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  background: var(--color-surface-soft);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+}
+.readinessMember span {
+  color: var(--color-muted);
+  font-size: 0.82rem;
+  text-transform: capitalize;
+}
+.roomAction {
+  display: inline-flex;
+  justify-content: center;
+  width: 100%;
+  padding: 0.75rem;
+  margin-top: var(--space-3);
+  color: #fff;
+  font-weight: 800;
+  text-align: center;
+  text-decoration: none;
+  background: linear-gradient(
+    135deg,
+    var(--color-teal),
+    var(--color-teal-strong)
+  );
+  border-radius: var(--radius-sm);
+}
+.roomStatus {
+  padding: var(--space-3);
+  margin-top: var(--space-3);
+  background: var(--color-leaf-soft);
+  border-left: 4px solid var(--color-leaf);
+  border-radius: var(--radius-xs);
+}
+.roomStatus a {
+  display: block;
+  margin-top: var(--space-2);
+}
+@media (max-width: 780px) {
+  .roles {
+    grid-template-columns: 1fr;
+  }
+  .readinessGrid {
+    grid-template-columns: 1fr;
+  }
+  .header {
+    display: grid;
+  }
+}

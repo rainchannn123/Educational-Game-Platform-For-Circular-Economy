@@ -1,0 +1,34 @@
+{
+  "name": "circular-city-game",
+  "private": true,
+  "packageManager": "pnpm@10.18.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "corepack pnpm -r --if-present run build",
+    "dev": "corepack pnpm -r --parallel --if-present run dev",
+    "dev:web": "pnpm --filter @circular-city/web dev",
+    "dev:api": "pnpm --filter @circular-city/api dev",
+    "dev:worker": "pnpm --filter @circular-city/worker dev",
+    "lint": "corepack pnpm -r --if-present run lint",
+    "typecheck": "corepack pnpm -r --if-present run typecheck",
+    "test": "corepack pnpm -r --if-present run test",
+    "test:integration": "pnpm --filter @circular-city/api test:integration",
+    "test:e2e": "pnpm --filter @circular-city/web test:e2e",
+    "seed": "pnpm --filter @circular-city/api seed",
+    "validate:env": "tsx scripts/validate-env.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@typescript-eslint/eslint-plugin": "^8.31.0",
+    "@typescript-eslint/parser": "^8.31.0",
+    "eslint": "^9.26.0",
+    "eslint-config-prettier": "^10.1.5",
+    "prettier": "^3.5.3",
+    "tsx": "^4.19.4",
+    "turbo": "^2.5.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.3"
+  }
+}

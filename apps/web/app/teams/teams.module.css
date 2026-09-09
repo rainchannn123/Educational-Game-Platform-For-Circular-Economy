@@ -1,0 +1,73 @@
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+.eyebrow {
+  color: var(--color-teal);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+.forms {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5);
+  max-width: 55rem;
+}
+.forms label {
+  display: grid;
+  gap: var(--space-2);
+}
+.forms input {
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  padding: 0.7rem;
+  color: var(--color-ink);
+}
+.primary,
+.secondary {
+  padding: 0.75rem 1rem;
+  border: 0;
+  font-weight: 750;
+  text-decoration: none;
+  text-align: center;
+}
+.primary {
+  background: var(--color-teal);
+  color: #042128;
+}
+.secondary {
+  background: var(--color-raised);
+  color: var(--color-ink);
+}
+.team {
+  max-width: 55rem;
+}
+.seats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+}
+.seat {
+  display: grid;
+  gap: var(--space-1);
+  background: var(--color-bg);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+.error {
+  color: var(--color-coral);
+}
+@media (max-width: 650px) {
+  .forms,
+  .seats {
+    grid-template-columns: 1fr;
+  }
+  .header {
+    display: grid;
+  }
+}

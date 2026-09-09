@@ -1,0 +1,100 @@
+.header {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-bottom: var(--space-4);
+  margin-bottom: var(--space-5);
+  border-bottom: 1px solid var(--color-line);
+}
+.eyebrow {
+  color: var(--color-teal);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+.grid label {
+  display: grid;
+  gap: var(--space-2);
+  color: var(--color-ink-strong);
+  font-size: 0.88rem;
+  font-weight: 750;
+}
+.grid input,
+.grid select {
+  padding: 0.75rem;
+  color: var(--color-ink);
+  background: #fff;
+  border: 1px solid var(--color-line-strong);
+}
+.grid button,
+.list button {
+  padding: 0.75rem 1rem;
+  color: #fff;
+  font-weight: 800;
+  background: linear-gradient(
+    135deg,
+    var(--color-teal),
+    var(--color-teal-strong)
+  );
+  border: 0;
+  box-shadow: 0 7px 15px rgb(8 127 116 / 0.18);
+}
+.list {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+}
+.list article {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-4);
+}
+.list article h2 {
+  margin-bottom: var(--space-1);
+}
+.seatGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.seatGrid span {
+  padding: var(--space-2);
+  color: var(--color-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  background: var(--color-surface-soft);
+  border: 1px dashed var(--color-line-strong);
+  border-radius: var(--radius-xs);
+}
+.seatGrid span[data-state="stable"] {
+  color: var(--color-teal-strong);
+  background: var(--color-teal-soft);
+  border-style: solid;
+  border-color: var(--color-teal);
+}
+.quit {
+  color: var(--color-coral) !important;
+  background: var(--color-coral-soft) !important;
+  border: 1px solid var(--color-coral) !important;
+}
+.roomActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+@media (max-width: 650px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+  .header,
+  .list article {
+    display: grid;
+  }
+}

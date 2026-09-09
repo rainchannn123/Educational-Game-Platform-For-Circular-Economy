@@ -1,0 +1,32 @@
+{
+  "name": "@circular-city/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run --passWithNoTests --exclude e2e/**",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@circular-city/contracts": "workspace:*",
+    "@circular-city/game-content": "workspace:*",
+    "@circular-city/ui": "workspace:*",
+    "@tanstack/react-query": "^5.76.1",
+    "next": "^15.3.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "socket.io-client": "^4.8.1",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.3"
+  }
+}

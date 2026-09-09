@@ -1,0 +1,22 @@
+.eyebrow {
+  color: var(--color-teal);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+.ranking {
+  padding: 0;
+  display: grid;
+  gap: var(--space-3);
+  list-style: none;
+}
+.ranking li {
+  display: grid;
+  grid-template-columns: 1.2fr repeat(4, 1fr);
+  gap: var(--space-3);
+}
+@media (max-width: 700px) {
+  .ranking li {
+    grid-template-columns: 1fr 1fr;
+  }
+}

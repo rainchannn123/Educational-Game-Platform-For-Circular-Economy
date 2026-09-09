@@ -1,0 +1,21 @@
+import { describe, expect, test } from "vitest";
+import { dueScheduleSlots, projectForSequence } from "../src/scheduler.js";
+
+describe("durable scheduler calculations", () => {
+  test("keeps the first project in the approved opening set", () => {
+    expect(["P01", "P02"]).toContain(projectForSequence(42, 1).id);
+  });
+
+  test("does not repeat templates before the deck is exhausted", () => {
+    const templates = Array.from({ length: 20 }, (_, index) =>
+      projectForSequence(9876, index + 1).id,
+    );
+    expect(new Set(templates)).toHaveLength(templates.length);
+  });
+
+  test("returns every missed timer slot after a worker delay", () => {
+    expect(dueScheduleSlots(-1, 61_000, 0, 15_000)).toEqual([0, 1, 2, 3, 4]);
+    expect(dueScheduleSlots(-1, 61_000, 50_000, 60_000)).toEqual([0]);
+    expect(dueScheduleSlots(0, 171_000, 50_000, 60_000)).toEqual([1, 2]);
+  });
+});
