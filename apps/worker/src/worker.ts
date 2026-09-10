@@ -10,6 +10,7 @@ import {
   addMaterial,
   calculateRankings,
   calculateProcessing,
+  healthMissionDelta,
   healthStatus,
   materialKeys,
   type TeamState,
@@ -694,9 +695,27 @@ async function settleDueEntities(): Promise<void> {
     status: "active",
     expiresAt: { $lte: current },
   })) {
+    const template = HEALTH_MISSIONS.find(
+      (item) => item.id === mission.templateId,
+    );
+    const answers = {
+      municipality:
+        mission.steps?.municipality?.optionKey ?? "no-response-timeout",
+      mrf: mission.steps?.mrf?.optionKey ?? "no-response-timeout",
+      broker: mission.steps?.broker?.optionKey ?? "no-response-timeout",
+    } as any;
+    const timeoutOutcome = template
+      ? healthMissionDelta(template, answers)
+      : { delta: -2, appropriateCount: 0, highImpact: false };
     const changed = await HealthMission.updateOne(
       { _id: mission._id, status: "active" },
-      { $set: { status: "expired", healthDelta: -6 } },
+      {
+        $set: {
+          status: "expired",
+          completedAt: current,
+          healthDelta: timeoutOutcome.delta,
+        },
+      },
     );
     if (!changed.modifiedCount) continue;
     const team = await GameTeamState.findOne({
@@ -704,7 +723,7 @@ async function settleDueEntities(): Promise<void> {
       teamId: mission.teamId,
     });
     if (team) {
-      team.health = Math.max(0, team.health - 6);
+      team.health = Math.max(0, Math.min(100, team.health + timeoutOutcome.delta));
       team.status = healthStatus(team.health);
       team.revision += 1;
       await team.save();
@@ -712,7 +731,12 @@ async function settleDueEntities(): Promise<void> {
     await due(
       mission.gameId,
       "health-mission.updated",
-      { missionId: String(mission._id), status: "expired", healthDelta: -6 },
+      {
+        missionId: String(mission._id),
+        status: "expired",
+        reason: "timeout",
+        healthDelta: timeoutOutcome.delta,
+      },
       `team:${mission.gameId}:${mission.teamId}`,
     );
   }

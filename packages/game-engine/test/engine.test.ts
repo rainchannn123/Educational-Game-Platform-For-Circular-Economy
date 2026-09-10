@@ -14,14 +14,32 @@ import {
 } from "../src/index.js";
 
 describe("deterministic game rules", () => {
-  it("applies the exact 0.85 CO2 multiplier at twice room average", () => {
+  it("applies the 0.50x CO2 multiplier at twice room average", () => {
     const winner = defaultTeam("a", 1);
     winner.totalCO2Kg = 2000;
     const other = defaultTeam("b", 2);
     other.totalCO2Kg = 0;
     const receipt = calculateCo2Receipt(winner, [winner, other], 100_000);
-    expect(receipt.multiplierBasisPoints).toBe(8500);
-    expect(receipt.netRevenueCents).toBe(85_000);
+    expect(receipt.multiplierBasisPoints).toBe(5000);
+    expect(receipt.netRevenueCents).toBe(50_000);
+  });
+  it("awards the 2.00x cap to strong low-CO2 performance", () => {
+    const winner = defaultTeam("a", 1);
+    winner.totalCO2Kg = 1000;
+    const other = defaultTeam("b", 2);
+    other.totalCO2Kg = 3000;
+    const receipt = calculateCo2Receipt(winner, [winner, other], 100_000);
+    expect(receipt.multiplierBasisPoints).toBe(20_000);
+    expect(receipt.netRevenueCents).toBe(200_000);
+  });
+  it("keeps 1.00x when winner matches room average", () => {
+    const winner = defaultTeam("a", 1);
+    winner.totalCO2Kg = 2000;
+    const other = defaultTeam("b", 2);
+    other.totalCO2Kg = 2000;
+    const receipt = calculateCo2Receipt(winner, [winner, other], 100_000);
+    expect(receipt.multiplierBasisPoints).toBe(10_000);
+    expect(receipt.netRevenueCents).toBe(100_000);
   });
   it("floors recovered material and applies residue costs", () => {
     const result = calculateProcessing(

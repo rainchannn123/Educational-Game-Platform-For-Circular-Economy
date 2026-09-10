@@ -98,6 +98,12 @@ export interface Co2Receipt {
   grossRevenueCents: number;
   netRevenueCents: number;
 }
+export interface Co2Multiplier {
+  averageCO2Kg: number;
+  winnerCO2Kg: number;
+  eligibleTeamCount: number;
+  multiplierBasisPoints: number;
+}
 export interface ProjectWork {
   municipalityReady: boolean;
   mrfReady: boolean;
@@ -175,30 +181,47 @@ export function calculateCo2Receipt(
   teams: TeamState[],
   grossRevenueCents: number,
 ): Co2Receipt {
-  const eligible = teams.filter((team) => team.status !== "withdrawn");
-  const averageCO2Kg = Math.floor(
-    eligible.reduce((sum, team) => sum + team.totalCO2Kg, 0) /
-      Math.max(eligible.length, 1),
-  );
-  const base = Math.max(averageCO2Kg, 1000);
-  const excess = Math.max(
-    0,
-    Math.floor(((winner.totalCO2Kg - base) * 10_000) / base),
-  );
-  const multiplierBasisPoints = clamp(
-    10_000 - Math.floor((excess * 1500) / 10_000),
-    5500,
-    10000,
-  );
+  const multiplier = calculateCo2Multiplier(winner, teams);
   return {
-    averageCO2Kg,
-    winnerCO2Kg: winner.totalCO2Kg,
-    multiplierBasisPoints,
+    averageCO2Kg: multiplier.averageCO2Kg,
+    winnerCO2Kg: multiplier.winnerCO2Kg,
+    multiplierBasisPoints: multiplier.multiplierBasisPoints,
     grossRevenueCents,
     netRevenueCents: roundHalfUp(
-      grossRevenueCents * multiplierBasisPoints,
+      grossRevenueCents * multiplier.multiplierBasisPoints,
       10_000,
     ),
+  };
+}
+
+export function calculateCo2Multiplier(
+  winner: Pick<TeamState, "status" | "totalCO2Kg">,
+  teams: Array<Pick<TeamState, "status" | "totalCO2Kg">>,
+): Co2Multiplier {
+  const eligible = teams.filter((team) => team.status !== "withdrawn");
+  const eligibleTeamCount = Math.max(eligible.length, 1);
+  const averageCO2Kg = Math.floor(
+    eligible.reduce((sum, team) => sum + Math.max(0, team.totalCO2Kg), 0) /
+      eligibleTeamCount,
+  );
+  const winnerCO2Kg = Math.max(0, winner.totalCO2Kg);
+
+  let multiplierBasisPoints = 10_000;
+  if (winnerCO2Kg <= 0) {
+    multiplierBasisPoints = averageCO2Kg > 0 ? 20_000 : 10_000;
+  } else {
+    multiplierBasisPoints = clamp(
+      roundHalfUp(averageCO2Kg * 10_000, winnerCO2Kg),
+      5_000,
+      20_000,
+    );
+  }
+
+  return {
+    averageCO2Kg,
+    winnerCO2Kg,
+    eligibleTeamCount,
+    multiplierBasisPoints,
   };
 }
 

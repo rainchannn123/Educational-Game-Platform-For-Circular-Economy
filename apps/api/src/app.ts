@@ -26,6 +26,7 @@ import {
 } from "@circular-city/contracts";
 import { PROJECTS, STANDARD_SCENARIO } from "@circular-city/game-content";
 import {
+  calculateCo2Multiplier,
   calculateProcessing,
   defaultTeam,
   materialKeys,
@@ -45,6 +46,7 @@ import {
   Room,
   Team,
   TradeOffer,
+  Transport,
   User,
 } from "./models.js";
 import { GameService } from "./game-service.js";
@@ -663,22 +665,22 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         )
       )
         throw new RuleError("TEAM_NOT_READY");
-       const start = Date.now();
-       const seed = Math.floor(Math.random() * 2 ** 31);
-       const game = await Game.create({
-         roomId: String(room._id),
-         seed,
-         configSnapshot: STANDARD_SCENARIO,
-         status: "active",
-         startedAt: start,
-         activeStartedAt: start,
-         activeEndsAt: start + STANDARD_SCENARIO.activeMs,
-         finalizationEndsAt:
-           start + STANDARD_SCENARIO.activeMs + STANDARD_SCENARIO.finalizationMs,
-         nextScheduledAt: start,
-         projectCursor: 1,
-         projectPreviewCursor: 1,
-         participantTeamIds: room.seating.map(
+      const start = Date.now();
+      const seed = Math.floor(Math.random() * 2 ** 31);
+      const game = await Game.create({
+        roomId: String(room._id),
+        seed,
+        configSnapshot: STANDARD_SCENARIO,
+        status: "active",
+        startedAt: start,
+        activeStartedAt: start,
+        activeEndsAt: start + STANDARD_SCENARIO.activeMs,
+        finalizationEndsAt:
+          start + STANDARD_SCENARIO.activeMs + STANDARD_SCENARIO.finalizationMs,
+        nextScheduledAt: start,
+        projectCursor: 1,
+        projectPreviewCursor: 1,
+        participantTeamIds: room.seating.map(
           (seat: { teamId: string }) => seat.teamId,
         ),
       });
@@ -695,27 +697,26 @@ export const createApp = (env: Env = readEnv()): express.Express => {
                 member.userId,
               ]),
           ),
-         })),
-       );
-       const firstProject = PROJECTS[seed % 2]!;
-       await GameProject.create({
-         gameId: String(game._id),
-         sequence: 1,
-         templateId: firstProject.id,
-         template: firstProject,
-         status: "active",
-         previewAt: start,
-         announcementAt: start,
-         activeAt: start,
-         expiresAt: start + firstProject.activeDurationMs,
-       });
-       room.status = "started";
-       await room.save();
-       for (const seatedTeam of room.seating)
-         emitTeamUpdated(seatedTeam.teamId);
-       response.json({
+        })),
+      );
+      const firstProject = PROJECTS[seed % 2]!;
+      await GameProject.create({
+        gameId: String(game._id),
+        sequence: 1,
+        templateId: firstProject.id,
+        template: firstProject,
+        status: "active",
+        previewAt: start,
+        announcementAt: start,
+        activeAt: start,
+        expiresAt: start + firstProject.activeDurationMs,
+      });
+      room.status = "started";
+      await room.save();
+      for (const seatedTeam of room.seating) emitTeamUpdated(seatedTeam.teamId);
+      response.json({
         success: true,
-         data: { gameId: String(game._id), countdownEndsAt: game.activeEndsAt },
+        data: { gameId: String(game._id), countdownEndsAt: game.activeEndsAt },
       });
     } catch (error) {
       responseError(error, response);
@@ -736,63 +737,69 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         teamId: membership.state.teamId,
         status: "open",
       }).lean();
-      const [wasteSources, jobs, mission, trades, leaderboard, chatMessages] =
-         await Promise.all([
-          mongoose
-            .model("WasteSource")
-            .find({
-              gameId: request.params.gameId,
-              teamId: membership.state.teamId,
-              status: {
-                $in: [
-                  "available",
-                  "in_transit",
-                  "at_mrf",
-                  "held",
-                  "processing",
-                ],
-              },
-            })
-            .lean(),
-          mongoose
-            .model("ProcessJob")
-            .find({
-              gameId: request.params.gameId,
-              teamId: membership.state.teamId,
-              status: "processing",
-            })
-            .lean(),
-          mongoose
-            .model("HealthMission")
-            .findOne({
-              gameId: request.params.gameId,
-              teamId: membership.state.teamId,
-              status: "active",
-            })
-            .lean(),
-          mongoose
-            .model("TradeOffer")
-            .find({
-              gameId: request.params.gameId,
-              $or: [
-                { offeringTeamId: membership.state.teamId },
-                { recipientTeamId: membership.state.teamId },
-              ],
-            })
-            .lean(),
-           GameTeamState.find({ gameId: request.params.gameId })
-             .sort({ citySlot: 1 })
-             .select("teamId citySlot")
-             .lean(),
-           ChatMessage.find({
-             gameId: request.params.gameId,
-             teamId: membership.state.teamId,
-             channel: "team",
-           })
-             .sort({ createdAtMs: -1 })
-             .limit(50)
-            .lean(),
-         ]);
+      const [
+        wasteSources,
+        jobs,
+        mission,
+        trades,
+        transports,
+        leaderboard,
+        chatMessages,
+      ] = await Promise.all([
+        mongoose
+          .model("WasteSource")
+          .find({
+            gameId: request.params.gameId,
+            teamId: membership.state.teamId,
+            status: {
+              $in: ["available", "in_transit", "at_mrf", "held", "processing"],
+            },
+          })
+          .lean(),
+        mongoose
+          .model("ProcessJob")
+          .find({
+            gameId: request.params.gameId,
+            teamId: membership.state.teamId,
+            status: "processing",
+          })
+          .lean(),
+        mongoose
+          .model("HealthMission")
+          .findOne({
+            gameId: request.params.gameId,
+            teamId: membership.state.teamId,
+            status: "active",
+          })
+          .lean(),
+        mongoose
+          .model("TradeOffer")
+          .find({
+            gameId: request.params.gameId,
+            $or: [
+              { offeringTeamId: membership.state.teamId },
+              { recipientTeamId: membership.state.teamId },
+            ],
+          })
+          .lean(),
+        Transport.find({
+          gameId: request.params.gameId,
+          teamId: membership.state.teamId,
+          status: "in_transit",
+        }).lean(),
+        GameTeamState.find({ gameId: request.params.gameId })
+          .sort({ citySlot: 1 })
+          .select("teamId citySlot status totalCO2Kg")
+          .lean(),
+        ChatMessage.find({
+          gameId: request.params.gameId,
+          teamId: membership.state.teamId,
+          channel: "team",
+        })
+          .sort({ createdAtMs: -1 })
+          .limit(50)
+          .lean(),
+      ]);
       const teamNameDocs = await Team.find({
         _id: { $in: leaderboard.map((entry) => entry.teamId) },
       })
@@ -801,6 +808,13 @@ export const createApp = (env: Env = readEnv()): express.Express => {
       const teamNameById = new Map(
         teamNameDocs.map((entry) => [String(entry._id), entry.name]),
       );
+      const rewardMultiplierBasisPoints = calculateCo2Multiplier(
+        membership.state as any,
+        leaderboard.map((entry) => ({
+          status: entry.status,
+          totalCO2Kg: entry.totalCO2Kg,
+        })) as any,
+      ).multiplierBasisPoints;
       response.json({
         success: true,
         data: {
@@ -819,12 +833,16 @@ export const createApp = (env: Env = readEnv()): express.Express => {
           },
           team: {
             ...membership.state,
+            rewardMultiplierBasisPoints,
             wasteSources,
             activeJobs: jobs,
+            transports,
             currentHealthMission: mission,
             mrfActionGuide: Object.fromEntries(
               wasteSources
-                .filter((source: any) => ["at_mrf", "held"].includes(source.status))
+                .filter((source: any) =>
+                  ["at_mrf", "held"].includes(source.status),
+                )
                 .map((source: any) => [source._id, mrfGuideForSource(source)]),
             ),
           },
@@ -840,15 +858,16 @@ export const createApp = (env: Env = readEnv()): express.Express => {
               )
               .slice(-24),
           },
-            teamProjectWork: work,
-            trades,
-            chatMessages: chatMessages.reverse(),
-            publicLeaderboard: leaderboard.map((entry) => ({
-              ...entry,
-              name:
-                teamNameById.get(String(entry.teamId)) ??
-                `City ${entry.citySlot ?? "?"}`,
-            })),
+          teamProjectWork: work,
+          trades,
+          chatMessages: chatMessages.reverse(),
+          publicLeaderboard: leaderboard.map((entry) => ({
+            teamId: entry.teamId,
+            citySlot: entry.citySlot,
+            name:
+              teamNameById.get(String(entry.teamId)) ??
+              `City ${entry.citySlot ?? "?"}`,
+          })),
         },
       });
     } catch (error) {
@@ -1144,29 +1163,29 @@ export const createApp = (env: Env = readEnv()): express.Express => {
     try {
       await service.member(request.params.gameId, request.principal!.userId);
       const game = await Game.findById(request.params.gameId).lean();
-       const results = await GameResultTeam.find({
-         gameId: request.params.gameId,
-       })
-         .sort({ rank: 1 })
-         .lean();
-       const teams = results.length
-         ? results
-         : await GameTeamState.find({ gameId: request.params.gameId })
-         .sort({
-          walletCents: -1,
-          totalCO2Kg: 1,
-          health: -1,
-          lastProjectClaimedAt: 1,
-          citySlot: 1,
-        })
-         .lean();
+      const results = await GameResultTeam.find({
+        gameId: request.params.gameId,
+      })
+        .sort({ rank: 1 })
+        .lean();
+      const teams = results.length
+        ? results
+        : await GameTeamState.find({ gameId: request.params.gameId })
+            .sort({
+              walletCents: -1,
+              totalCO2Kg: 1,
+              health: -1,
+              lastProjectClaimedAt: 1,
+              citySlot: 1,
+            })
+            .lean();
       response.json({
         success: true,
         data: {
           game,
-           teams: results.length
-             ? teams
-             : teams.map((team, index) => ({ ...team, rank: index + 1 })),
+          teams: results.length
+            ? teams
+            : teams.map((team, index) => ({ ...team, rank: index + 1 })),
         },
       });
     } catch (error) {

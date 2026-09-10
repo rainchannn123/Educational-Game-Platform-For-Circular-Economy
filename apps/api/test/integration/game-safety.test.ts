@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import request from "supertest";
+import { PROJECTS } from "@circular-city/game-content";
 import { defaultTeam } from "@circular-city/game-engine";
 import { signToken } from "../../src/auth.js";
 import { createApp } from "../../src/app.js";
@@ -9,6 +10,7 @@ import { GameService } from "../../src/game-service.js";
 import {
   ChatMessage,
   Game,
+  GameProject,
   GameTeamState,
   Team,
   User,
@@ -191,5 +193,161 @@ describe("authoritative game safety", () => {
     expect(await WasteSource.findById(source._id).lean()).toMatchObject({
       status: "in_transit",
     });
+  });
+
+  test("allows project claims from any role when materials are sufficient", async () => {
+    const stamp = Date.now();
+    const user = await User.create({
+      displayName: "Broker Tester",
+      email: `broker-${stamp}@example.test`,
+      passwordHash: "not-used",
+    });
+    const team = await Team.create({
+      name: "Broker Team",
+      inviteCode: `B${String(stamp).slice(-5)}`,
+      leaderUserId: String(user._id),
+      members: [
+        {
+          userId: String(user._id),
+          displayName: "Broker Tester",
+          role: "broker",
+          ready: true,
+        },
+      ],
+      status: "in-room",
+    });
+    const game = await Game.create({
+      roomId: `room-broker-${stamp}`,
+      status: "active",
+      startedAt: stamp,
+      activeEndsAt: stamp + 120_000,
+      participantTeamIds: [String(team._id)],
+    });
+    const template = PROJECTS[0]!;
+    const state = defaultTeam(String(team._id), 1);
+    (Object.keys(template.requirementsKg) as Array<keyof typeof template.requirementsKg>)
+      .forEach((material) => {
+        state.inventory[material].B = template.requirementsKg[material];
+      });
+    await GameTeamState.create({
+      gameId: String(game._id),
+      teamId: String(team._id),
+      ...state,
+      memberRoles: { broker: String(user._id) },
+    });
+    const project = await GameProject.create({
+      gameId: String(game._id),
+      sequence: 1,
+      templateId: template.id,
+      template,
+      status: "active",
+      activeAt: stamp,
+      expiresAt: stamp + 120_000,
+    });
+    const app = createApp(env);
+    const token = signToken({ userId: String(user._id), roles: ["student"] }, env);
+    const response = await request(app)
+      .post(`/v1/games/${game._id}/projects/${project._id}/claim`)
+      .set("authorization", `Bearer ${token}`)
+      .set("idempotency-key", "00000000-0000-4000-8000-000000000011")
+      .send({
+        commandId: "00000000-0000-4000-8000-000000000011",
+        expectedTeamRevision: 0,
+        payload: { confirm: true },
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.result.receipt.netRevenueCents).toBeGreaterThan(0);
+  });
+
+  test("persists multiplier receipt on direct project claim", async () => {
+    const stamp = Date.now() + 1;
+    const user = await User.create({
+      displayName: "Municipality Tester",
+      email: `municipality-${stamp}@example.test`,
+      passwordHash: "not-used",
+    });
+    const team = await Team.create({
+      name: "Municipality Team",
+      inviteCode: `M${String(stamp).slice(-5)}`,
+      leaderUserId: String(user._id),
+      members: [
+        {
+          userId: String(user._id),
+          displayName: "Municipality Tester",
+          role: "municipality",
+          ready: true,
+        },
+      ],
+      status: "in-room",
+    });
+    const game = await Game.create({
+      roomId: `room-muni-${stamp}`,
+      status: "active",
+      startedAt: stamp,
+      activeEndsAt: stamp + 180_000,
+      participantTeamIds: [String(team._id)],
+    });
+    const template = PROJECTS[0]!;
+    const state = defaultTeam(String(team._id), 1);
+    state.totalCO2Kg = 1000;
+    const plannedKg = Object.values(template.requirementsKg).reduce(
+      (sum, value) => sum + value,
+      0,
+    );
+    state.provenance.externalKg = plannedKg;
+    (Object.keys(template.requirementsKg) as Array<keyof typeof template.requirementsKg>)
+      .forEach((material) => {
+        state.inventory[material].B = template.requirementsKg[material];
+      });
+    await GameTeamState.create({
+      gameId: String(game._id),
+      teamId: String(team._id),
+      ...state,
+      memberRoles: { municipality: String(user._id) },
+    });
+    const project = await GameProject.create({
+      gameId: String(game._id),
+      sequence: 1,
+      templateId: template.id,
+      template,
+      status: "active",
+      activeAt: stamp,
+      expiresAt: stamp + 120_000,
+    });
+
+    const app = createApp(env);
+    const token = signToken({ userId: String(user._id), roles: ["student"] }, env);
+    const snapshot = await request(app)
+      .get(`/v1/games/${game._id}/snapshot`)
+      .set("authorization", `Bearer ${token}`);
+    expect(snapshot.status).toBe(200);
+    expect(snapshot.body.data.team.rewardMultiplierBasisPoints).toBe(10_000);
+
+    const claimed = await request(app)
+      .post(`/v1/games/${game._id}/projects/${project._id}/claim`)
+      .set("authorization", `Bearer ${token}`)
+      .set("idempotency-key", "00000000-0000-4000-8000-000000000021")
+      .send({
+        commandId: "00000000-0000-4000-8000-000000000021",
+        expectedTeamRevision: 0,
+        payload: { confirm: true },
+      });
+
+    expect(claimed.status).toBe(200);
+    expect(claimed.body.data.result.receipt.multiplierBasisPoints).toBe(10_000);
+    expect(claimed.body.data.result.receipt.netRevenueCents).toBe(
+      template.grossRevenueCents,
+    );
+
+    const persistedProject = await GameProject.findById(project._id).lean();
+    expect(persistedProject?.awardReceipt?.multiplierBasisPoints).toBe(10_000);
+    const persistedTeam = await GameTeamState.findOne({
+      gameId: String(game._id),
+      teamId: String(team._id),
+    }).lean();
+    expect(persistedTeam?.walletCents).toBe(
+      state.walletCents + template.grossRevenueCents,
+    );
   });
 });

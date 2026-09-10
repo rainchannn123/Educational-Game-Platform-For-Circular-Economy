@@ -856,6 +856,7 @@ export class GameService {
             winnerTeamId: membership.state.teamId,
             grossRevenueCents: applied.receipt.grossRevenueCents,
             netRevenueCents: applied.receipt.netRevenueCents,
+            multiplierBasisPoints: applied.receipt.multiplierBasisPoints,
             co2ImpactKg: project.template.co2ImpactKg,
           },
           session,
