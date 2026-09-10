@@ -51,6 +51,8 @@
   align-content: center;
   gap: 0.2rem;
   padding: 0.45rem 0.65rem;
+  position: relative;
+  min-height: 3.05rem;
   background: rgb(255 255 255 / 0.88);
 }
 
@@ -67,11 +69,15 @@
 }
 
 .metricDelta {
-  grid-column: 2;
+  position: absolute;
+  right: 0.5rem;
+  bottom: 0.18rem;
   font-size: 0.62rem;
   font-style: normal;
   font-weight: 800;
   letter-spacing: 0.03em;
+  line-height: 1;
+  pointer-events: none;
   opacity: 0;
   transform: translateY(4px);
   animation: metric-pop 0.8s ease forwards;
@@ -97,9 +103,10 @@
   display: grid;
   grid-template-columns: 2rem auto auto;
   align-items: center;
-  column-gap: var(--space-2);
+  column-gap: 0.72rem;
   min-width: 9.5rem;
-  padding: 0.3rem 0.5rem 0.3rem 0.75rem;
+  padding: 0.3rem 0.5rem 0.26rem 0.75rem;
+  position: relative;
   color: var(--color-ink-strong);
   background: var(--role-soft);
   border: 1px solid
@@ -108,7 +115,7 @@
 }
 
 .matchStatus strong {
-  grid-row: span 2;
+  grid-row: 1;
   grid-column: 3;
   font-variant-numeric: tabular-nums;
   font-size: 1.15rem;
@@ -123,7 +130,7 @@
 }
 
 .roleAvatar {
-  grid-row: span 2;
+  grid-row: 1;
   width: 1.8rem;
   height: 1.8rem;
   object-fit: contain;
@@ -138,7 +145,18 @@
 }
 
 .matchStatus .playerRole {
+  display: block;
+  grid-column: 1;
+  grid-row: 1;
+  align-self: center;
+  padding-right: 0.25rem;
   color: var(--role-accent);
+}
+
+.matchStatus span:not(.playerRole) {
+  position: absolute;
+  left: 3.5rem;
+  bottom: 0.2rem;
 }
 
 .sectionHeader {
@@ -193,7 +211,6 @@
   background: var(--color-surface);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-md);
-  box-shadow: 0 8px 18px rgb(27 69 61 / 0.07);
   scroll-snap-align: start;
   transition:
     transform var(--motion-fast),
@@ -778,40 +795,46 @@
   right: 0;
   left: 0;
   width: 100vw;
-  min-height: 4rem;
+  height: 4.1rem;
+  min-height: 4.1rem;
   padding: 0;
   margin: 0;
   color: #f2faf5;
-  background: rgb(13 39 43 / 0.84);
-  border-color: rgb(255 255 255 / 0.28);
+  background: #123a33;
+  border: none;
   border-radius: 0;
   box-shadow: 0 14px 35px rgb(16 54 52 / 0.24);
   backdrop-filter: blur(14px);
 }
 
 .gameShell .metrics {
+  height: 100%;
   min-width: min(100%, 31rem);
-  background: rgb(255 255 255 / 0.15);
-  border-color: rgb(255 255 255 / 0.16);
+  background: #123a33;
+  border: none;
+  gap: 0;
 }
 
 .gameShell .metrics div {
   color: #f1f8f4;
-  background: rgb(10 33 37 / 0.56);
+  background: #123a33;
 }
 
 .gameShell .metrics strong {
   color: #fff8df;
+  font-size: 0.98rem;
 }
 
 .gameShell .metrics span {
   color: #bad5cc;
+  font-size: 0.68rem;
 }
 
 .gameShell .matchStatus {
+  height: 100%;
   color: #eff8f2;
-  background: color-mix(in srgb, var(--role-accent) 28%, rgb(8 29 34 / 0.88));
-  border-color: color-mix(in srgb, var(--role-accent) 70%, #fff);
+  background: #123a33;
+  border: none;
 }
 
 .gameShell .matchStatus strong {
@@ -819,7 +842,8 @@
 }
 
 .gameShell .matchStatus span {
-  color: #c5dcd5;
+  color: #fff4c9;
+  font-size: 1rem;
 }
 
 .gameShell .matchStatus .playerRole {
@@ -879,25 +903,18 @@
   background: rgb(16 48 52 / 0.86);
   border-color: rgb(255 255 255 / 0.25);
   border-radius: 0.9rem;
-  box-shadow: 0 12px 26px rgb(14 47 45 / 0.2);
+  box-shadow: none;
   backdrop-filter: blur(12px);
 }
 
 .gameShell .project:hover {
-  box-shadow: 0 15px 30px rgb(14 47 45 / 0.28);
+  box-shadow: none;
   transform: translateY(-2px);
 }
 
 .gameShell .project[data-state="active"] {
-  background: linear-gradient(
-    145deg,
-    rgb(48 67 51 / 0.94),
-    rgb(43 48 44 / 0.9)
-  );
   border-color: #f4c86a;
-  box-shadow:
-    0 0 0 2px rgb(244 200 106 / 0.23),
-    0 14px 30px rgb(14 47 45 / 0.24);
+  box-shadow: none;
 }
 
 .gameShell .project[data-state="queued"],
@@ -909,25 +926,40 @@
   max-width: calc(100% - 2.2rem);
   margin: 0;
   color: #fff8df;
-  font-size: 0.88rem;
+  font-size: 0.98rem;
   line-height: 1.18;
 }
 
 .gameShell .project p {
   color: #c4d8d2;
-  font-size: 0.67rem;
+  font-size: 0.76rem;
   line-height: 1.25;
 }
 
 .gameShell .project .projectMeta {
   color: #9ee1ce;
-  font-size: 0.59rem;
+  font-size: 0.66rem;
   font-weight: 800;
   letter-spacing: 0.07em;
 }
 
 .gameShell .project .projectImpact {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
   color: #e8efe8;
+}
+
+.gameShell .project .projectImpactStat {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+.gameShell .project .projectImpactStat img {
+  width: 0.88rem;
+  height: 0.88rem;
+  object-fit: contain;
 }
 
 .gameShell .requirements {
@@ -937,7 +969,7 @@
 .gameShell .requirements span {
   padding: 0.18rem 0.32rem;
   color: #173c40;
-  font-size: 0.58rem;
+  font-size: 0.66rem;
   background: #d7eee2;
 }
 
@@ -962,7 +994,7 @@
   bottom: 0.62rem;
   padding: 0.32rem 0.5rem;
   color: #173c40;
-  font-size: 0.61rem;
+  font-size: 0.72rem;
   background: #f6d678;
   border-color: #fff0b6;
 }
@@ -996,7 +1028,7 @@
 
 .inventoryBeltTitle {
   color: #9ee1ce;
-  font-size: 0.61rem;
+  font-size: 0.68rem;
   font-weight: 850;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -1016,13 +1048,13 @@
 
 .inventoryBelt span:not(.inventoryBeltTitle) {
   color: #bcd4cc;
-  font-size: 0.56rem;
+  font-size: 0.62rem;
   text-transform: capitalize;
 }
 
 .inventoryBelt strong {
   color: #fff6da;
-  font-size: 0.67rem;
+  font-size: 0.75rem;
 }
 
 .inventoryDelta {
@@ -1065,7 +1097,7 @@
   min-height: 2.5rem;
   padding: 0.48rem 0.65rem;
   color: #dceee8;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   font-weight: 800;
   background: rgb(255 255 255 / 0.08);
   border: 1px solid transparent;
@@ -1101,13 +1133,13 @@
 .actionPopup {
   position: absolute;
   z-index: 50;
-  top: clamp(10.4rem, 24vh, 12.4rem);
+  top: clamp(17.4rem, 24vh, 12.4rem);
   right: 0.85rem;
   bottom: 13.2rem;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   width: min(35rem, calc(100vw - 1.7rem));
-  max-height: 35dvh;
+  max-height: 47dvh;
   overflow: hidden;
   color: #edf7f2;
   background: rgb(13 38 43 / 0.93);
@@ -1129,7 +1161,7 @@
 
 .actionPopupHeader span {
   color: #9ee1ce;
-  font-size: 0.57rem;
+  font-size: 0.63rem;
   font-weight: 850;
   letter-spacing: 0.1em;
 }
@@ -1137,7 +1169,7 @@
 .actionPopupHeader h2 {
   margin: 0.08rem 0 0;
   color: #fff8df;
-  font-size: 1rem;
+  font-size: 1.08rem;
 }
 
 .actionPopupHeader .closePopup {
@@ -1175,7 +1207,7 @@
 .overlaySection button {
   padding: 0.55rem 0.68rem;
   color: #173c40;
-  font-size: 0.72rem;
+  font-size: 0.79rem;
   font-weight: 800;
   background: #e7f4ed;
   border: 1px solid #fff;
@@ -1340,7 +1372,7 @@
 .quizQuestion {
   margin: 0;
   color: #eaf6f0;
-  font-size: 0.74rem;
+  font-size: 0.81rem;
   line-height: 1.25;
 }
 
@@ -1356,7 +1388,7 @@
 .quizState {
   margin: 0;
   color: #bfd3cd;
-  font-size: 0.72rem;
+  font-size: 0.78rem;
 }
 
 .quizResult {

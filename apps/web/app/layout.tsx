@@ -6,7 +6,7 @@ import "../styles/utilities.css";
 import { PlayerAccount } from "../components/PlayerAccount";
 import { Providers } from "../components/Providers";
 export const metadata: Metadata = {
-  title: "Circular City Rush",
+  title: "Clash of the Cities",
   description: "A real-time circular economy learning game",
 };
 export default function RootLayout({

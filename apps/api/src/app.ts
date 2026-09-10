@@ -815,13 +815,36 @@ export const createApp = (env: Env = readEnv()): express.Express => {
           totalCO2Kg: entry.totalCO2Kg,
         })) as any,
       ).multiplierBasisPoints;
+      const snapshotTime = Date.now();
+      const overdueActive = projects.filter(
+        (project) =>
+          project.status === "active" &&
+          typeof project.expiresAt === "number" &&
+          project.expiresAt <= snapshotTime,
+      );
+      const activeProjects = projects.filter(
+        (project) =>
+          project.status === "active" &&
+          (!project.expiresAt || project.expiresAt > snapshotTime),
+      );
+      const recentlyClosed = projects
+        .filter((project) =>
+          ["claimed", "expired", "cancelled"].includes(project.status),
+        )
+        .concat(
+          overdueActive.map((project) => ({
+            ...project,
+            status: "expired" as const,
+          })),
+        )
+        .slice(-24);
       response.json({
         success: true,
         data: {
           game: {
             id: String(game!._id),
             status: game!.status,
-            serverTime: Date.now(),
+            serverTime: snapshotTime,
             activeEndsAt: game!.activeEndsAt,
             finalizationEndsAt: game!.finalizationEndsAt,
             revision: game!.globalRevision,
@@ -850,13 +873,9 @@ export const createApp = (env: Env = readEnv()): express.Express => {
             preview: projects.filter(
               (project) => project.status === "announced",
             ),
-            active: projects.filter((project) => project.status === "active"),
+            active: activeProjects,
             queued: projects.filter((project) => project.status === "queued"),
-            recentlyClosed: projects
-              .filter((project) =>
-                ["claimed", "expired", "cancelled"].includes(project.status),
-              )
-              .slice(-24),
+            recentlyClosed,
           },
           teamProjectWork: work,
           trades,

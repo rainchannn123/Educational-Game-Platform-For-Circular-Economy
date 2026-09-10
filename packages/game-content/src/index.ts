@@ -105,7 +105,7 @@ const project = (
   requirementsKg: { ...EMPTY_MATERIALS, ...r },
   grossRevenueCents: dollars * 100,
   co2ImpactKg: co2Tons * 1000,
-  activeDurationMs: seconds * 1000,
+  activeDurationMs: 180_000,
   context,
 });
 export const PROJECTS: ProjectTemplate[] = [

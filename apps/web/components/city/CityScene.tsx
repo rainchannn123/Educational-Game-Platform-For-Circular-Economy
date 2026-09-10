@@ -112,6 +112,8 @@ const materialColors: Record<Material, string> = {
   wood: "#a66c43",
 };
 
+const cityVerticalOffset = -0.8;
+
 const projectColor: Record<CityProject["status"], string> = {
   announced: "#9da6b1",
   active: "#f0ab37",
@@ -287,84 +289,86 @@ function CityWorld({
         shadow-mapSize-width={1024}
       />
       <hemisphereLight args={["#e6fff4", "#31575a", 1.15]} />
-      <CityGround health={model.health} />
-      <CircularLoop reducedMotion={reducedMotion} />
-      <AmbientTraffic reducedMotion={reducedMotion} />
-      <PedestrianFlow reducedMotion={reducedMotion} />
-      <Neighborhood />
-      <Facility
-        active={model.waste.available > 0}
-        color={facilities[0]!.color}
-        interactive={model.role === "municipality"}
-        label={facilities[0]!.label}
-        onSelect={() => onSelectFacility("municipality")}
-        position={facilities[0]!.position}
-        selected={selectedFacility === "municipality"}
-        variant="municipality"
-      />
-      <Facility
-        active={model.waste.queued + model.waste.processing > 0}
-        color={facilities[1]!.color}
-        interactive={model.role === "mrf"}
-        label={facilities[1]!.label}
-        onSelect={() => onSelectFacility("mrf")}
-        position={facilities[1]!.position}
-        selected={selectedFacility === "mrf"}
-        variant="mrf"
-      />
-      <Facility
-        active={model.activeTradeCount > 0}
-        color={facilities[2]!.color}
-        interactive={model.role === "broker"}
-        label={facilities[2]!.label}
-        onSelect={() => onSelectFacility("broker")}
-        position={facilities[2]!.position}
-        selected={selectedFacility === "broker"}
-        variant="broker"
-      />
-      <Facility
-        active={Object.values(model.inventoryKg).some((amount) => amount > 0)}
-        color={facilities[3]!.color}
-        interactive
-        label={facilities[3]!.label}
-        onSelect={() => onSelectFacility("warehouse")}
-        position={facilities[3]!.position}
-        selected={selectedFacility === "warehouse"}
-        variant="warehouse"
-      />
-      <Facility
-        active={false}
-        color={facilities[4]!.color}
-        interactive={false}
-        label={facilities[4]!.label}
-        onSelect={() => undefined}
-        position={facilities[4]!.position}
-        selected={selectedFacility === "future-site"}
-        variant="closed"
-      />
-      <InventorySilos inventoryKg={model.inventoryKg} />
-      {model.projects.map((project, index) => (
-        <ProjectPlot
-          key={project.id}
-          project={project}
-          reducedMotion={reducedMotion}
-          position={projectPositions[index] ?? projectPositions[0]!}
+      <group position={[0, cityVerticalOffset, 0]}>
+        <CityGround health={model.health} />
+        <CircularLoop reducedMotion={reducedMotion} />
+        <AmbientTraffic reducedMotion={reducedMotion} />
+        <PedestrianFlow reducedMotion={reducedMotion} />
+        <Neighborhood />
+        <Facility
+          active={model.waste.available > 0}
+          color={facilities[0]!.color}
+          interactive={model.role === "municipality"}
+          label={facilities[0]!.label}
+          onSelect={() => onSelectFacility("municipality")}
+          position={facilities[0]!.position}
+          selected={selectedFacility === "municipality"}
+          variant="municipality"
         />
-      ))}
-      {model.transits.map((transit) => (
-        <TransitMarker
-          key={transit.id}
-          reducedMotion={reducedMotion}
-          transit={transit}
+        <Facility
+          active={model.waste.queued + model.waste.processing > 0}
+          color={facilities[1]!.color}
+          interactive={model.role === "mrf"}
+          label={facilities[1]!.label}
+          onSelect={() => onSelectFacility("mrf")}
+          position={facilities[1]!.position}
+          selected={selectedFacility === "mrf"}
+          variant="mrf"
         />
-      ))}
-      {effects.map((effect) => (
-        <TransferEffectMarker
-          effect={effect}
-          key={effect.id}
-          reducedMotion={reducedMotion}
+        <Facility
+          active={model.activeTradeCount > 0}
+          color={facilities[2]!.color}
+          interactive={model.role === "broker"}
+          label={facilities[2]!.label}
+          onSelect={() => onSelectFacility("broker")}
+          position={facilities[2]!.position}
+          selected={selectedFacility === "broker"}
+          variant="broker"
         />
-      ))}
+        <Facility
+          active={Object.values(model.inventoryKg).some((amount) => amount > 0)}
+          color={facilities[3]!.color}
+          interactive
+          label={facilities[3]!.label}
+          onSelect={() => onSelectFacility("warehouse")}
+          position={facilities[3]!.position}
+          selected={selectedFacility === "warehouse"}
+          variant="warehouse"
+        />
+        <Facility
+          active={false}
+          color={facilities[4]!.color}
+          interactive={false}
+          label={facilities[4]!.label}
+          onSelect={() => undefined}
+          position={facilities[4]!.position}
+          selected={selectedFacility === "future-site"}
+          variant="closed"
+        />
+        <InventorySilos inventoryKg={model.inventoryKg} />
+        {model.projects.map((project, index) => (
+          <ProjectPlot
+            key={project.id}
+            project={project}
+            reducedMotion={reducedMotion}
+            position={projectPositions[index] ?? projectPositions[0]!}
+          />
+        ))}
+        {model.transits.map((transit) => (
+          <TransitMarker
+            key={transit.id}
+            reducedMotion={reducedMotion}
+            transit={transit}
+          />
+        ))}
+        {effects.map((effect) => (
+          <TransferEffectMarker
+            effect={effect}
+            key={effect.id}
+            reducedMotion={reducedMotion}
+          />
+        ))}
+      </group>
     </>
   );
 }

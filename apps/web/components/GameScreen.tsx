@@ -648,25 +648,19 @@ export function GameScreen({
           />
         </div>
         <div className={styles.matchStatus} aria-label="Match status">
-          <img
+            <img
             className={styles.roleAvatar}
             src={roleAvatar[routeRole]}
             alt=""
           />
-          <span className={styles.playerRole}>{roleLabel}</span>
+          <span className={styles.playerRole}>          
+            {roleLabel}</span>
           <strong>
             <img className={styles.timerIcon} src={asset("countdown")} alt="" />
             {countdownTarget
               ? formatCountdown(countdownTarget, displayServerTime)
               : "--:--"}
           </strong>
-          <span>
-            {data.game.status === "finalizing"
-              ? "Finalization"
-              : data.game.status === "active"
-                ? "Round active"
-                : "Briefing"}
-          </span>
         </div>
       </header>
       <section
@@ -676,11 +670,7 @@ export function GameScreen({
         tabIndex={-1}
       >
         <div className={styles.rail}>
-          {[
-            ...data.projects.active,
-            ...data.projects.queued,
-            ...data.projects.preview,
-          ].map((project: any) => (
+          {data.projects.active.map((project: any) => (
               <article
                 className={styles.project}
                 key={project._id}
@@ -699,7 +689,7 @@ export function GameScreen({
                 />
               )}
               <p className={styles.projectMeta}>
-                {project.status.toUpperCase()} · Tier {project.template.tier}
+                Tier {project.template.tier}
               </p>
               <h3>{project.template.title}</h3>
               <div className={styles.requirements}>
@@ -716,55 +706,43 @@ export function GameScreen({
                   ))}
               </div>
               <p className={styles.projectImpact}>
-                Gross {formatMoney(project.template.grossRevenueCents)} ·{" "}
-                Estimated net{" "}
-                {formatMoney(
-                  applyMultiplierCents(
-                    project.template.grossRevenueCents,
-                    rewardMultiplierBasisPoints,
-                  ),
-                )}{" "}
-                ({formatMultiplier(rewardMultiplierBasisPoints)}) ·{" "}
-                {project.template.co2ImpactKg < 0 ? "Avoids" : "Adds"}{" "}
-                {formatTons(Math.abs(project.template.co2ImpactKg))} CO2e
+                <span className={styles.projectImpactStat}>
+                  <img src={asset("wallet")} alt="" />
+                  {formatMoney(
+                    applyMultiplierCents(
+                      project.template.grossRevenueCents,
+                      rewardMultiplierBasisPoints,
+                    ),
+                  )}
+                </span>
+                <span className={styles.projectImpactStat}>
+                  <img src={asset("co2")} alt="" />
+                  {project.template.co2ImpactKg >= 0 ? "+" : "-"}
+                  {formatTons(Math.abs(project.template.co2ImpactKg))}
+                </span>
               </p>
-              {project.status === "announced" && (
-                <p>
-                  Arrives in{" "}
-                  {formatCountdown(project.announcementAt, displayServerTime)}
-                </p>
-              )}
-              {project.status === "queued" && (
-                <p>Queued until one active project is claimed or expires.</p>
-              )}
-              {project.status === "active" && (
-                <p data-state="urgent">
-                  <img
-                    className={styles.sparkle}
-                    src={asset("leaf-sparkle")}
-                    alt=""
-                  />
-                  {formatCountdown(project.expiresAt, displayServerTime)} to
-                  claim
-                </p>
-              )}
-              {project.status === "active" && (
-                <button
-                  className={styles.projectClaim}
-                  disabled={commandBusy}
-                  onClick={() =>
-                    void send(
-                      `/v1/games/${gameId}/projects/${project._id}/claim`,
-                      {
-                        expectedTeamRevision: team.revision,
-                        payload: { confirm: true },
-                      },
-                    )
-                  }
-                >
-                  {commandBusy ? "Submitting..." : "Complete Project"}
-                </button>
-              )}
+              <p data-state="urgent">
+                <img
+                  className={styles.sparkle}
+                  src={asset("leaf-sparkle")}
+                  alt=""
+                />
+                {project.expiresAt
+                  ? `${formatCountdown(project.expiresAt, displayServerTime)} remaining`
+                  : "Limited-time listing"}
+              </p>
+              <button
+                className={styles.projectClaim}
+                disabled={commandBusy}
+                onClick={() =>
+                  void send(`/v1/games/${gameId}/projects/${project._id}/claim`, {
+                    expectedTeamRevision: team.revision,
+                    payload: { confirm: true },
+                  })
+                }
+              >
+                {commandBusy ? "Submitting..." : "Complete Project"}
+              </button>
               </article>
           ))}
         </div>
