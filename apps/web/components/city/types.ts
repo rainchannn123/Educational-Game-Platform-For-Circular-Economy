@@ -1,4 +1,12 @@
-import type { Inventory, Material, Role } from "@circular-city/contracts";
+import type {
+  Grade,
+  Inventory,
+  Material,
+  ProcessingMethodId,
+  Role,
+  RoleInventories,
+  Route,
+} from "@circular-city/contracts";
 import type { ProjectTemplate } from "@circular-city/game-content";
 
 export type CityFacility =
@@ -30,13 +38,16 @@ export interface GameSnapshot {
     citySlot: number;
     walletCents: number;
     health: number;
+    healthRecoveryUntil?: number | null;
     totalCO2Kg: number;
     rewardMultiplierBasisPoints: number;
     revision: number;
     inventory: Inventory;
+    roleInventories: RoleInventories;
     wasteSources: WasteSource[];
     activeJobs: ProcessJob[];
     transports: Transport[];
+    materialTransfers: MaterialTransfer[];
     currentHealthMission: HealthMission | null;
     mrfActionGuide?: Record<string, MrfActionGuide[]>;
   };
@@ -49,6 +60,8 @@ export interface GameSnapshot {
   teamProjectWork: ProjectWork[];
   trades: TradeOffer[];
   chatMessages: ChatMessage[];
+  globalChatMessages: ChatMessage[];
+  announcements: GameAnnouncement[];
   publicLeaderboard: PublicLeaderboardEntry[];
 }
 
@@ -67,15 +80,45 @@ export interface WasteSource {
 export interface ProcessJob {
   _id: string;
   wasteSourceId: string;
-  mode: "rapid" | "balanced" | "quality" | "hold" | "landfill";
+  methodId: ProcessingMethodId;
+  result?: ProcessingResult;
   dueAt: number;
   status: "processing";
+}
+
+export interface ProcessingResult {
+  methodId: ProcessingMethodId;
+  targetMaterial?: Material;
+  outputKg: Record<Material, number>;
+  residueKg: number;
+  grade: Grade | null;
+  durationMs: number;
+  processingCostCents: number;
+  processingCO2Kg: number;
+  residueCostCents: number;
+  residueCO2Kg: number;
+  healthDelta: number;
 }
 
 export interface Transport {
   _id: string;
   wasteSourceId: string;
   route: "express" | "standard" | "consolidated";
+  arrivesAt: number;
+  status: "in_transit";
+}
+
+export interface MaterialTransfer {
+  _id: string;
+  fromRole: Role;
+  toRole: Role;
+  materialType: Material;
+  grade: Grade;
+  quantityKg: number;
+  route: Route;
+  costCents: number;
+  co2Kg: number;
+  departedAt: number;
   arrivesAt: number;
   status: "in_transit";
 }
@@ -143,9 +186,16 @@ export interface ProjectWork {
 }
 
 export interface MrfActionGuide {
-  mode: "rapid" | "balanced" | "quality" | "hold" | "landfill";
+  methodId: ProcessingMethodId;
+  kind: "recycling" | "disposal";
+  targetMaterial?: Material;
+  title: string;
+  shortLabel: string;
+  description: string;
+  eligible: boolean;
   durationMs: number;
   grade: "A" | "B" | "C" | null;
+  outputKg: Record<Material, number>;
   recoveredKg: number;
   residueKg: number;
   totalCostCents: number;
@@ -156,9 +206,20 @@ export interface MrfActionGuide {
 
 export interface ChatMessage {
   _id: string;
+  senderUserId: string;
+  senderName?: string;
   senderRole: string;
   content: string;
   createdAtMs: number;
+}
+
+export interface GameAnnouncement {
+  _id: string;
+  key: string;
+  type: "time" | "project-win";
+  message: string;
+  createdAtMs: number;
+  payload?: Record<string, unknown>;
 }
 
 export interface PublicLeaderboardEntry {
@@ -167,12 +228,18 @@ export interface PublicLeaderboardEntry {
   name?: string;
 }
 
-export type CityTransitKind = "collection" | "processing" | "trade";
+export type CityTransitKind =
+  | "collection"
+  | "processing"
+  | "material-transfer"
+  | "trade";
 
 export interface CityTransit {
   id: string;
   kind: CityTransitKind;
   material?: Material;
+  fromRole?: Role;
+  toRole?: Role;
   route: "express" | "standard" | "consolidated" | "low-carbon";
   arrivesAt: number;
 }

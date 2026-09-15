@@ -43,13 +43,16 @@ export const commandEnvelopeSchema = z.object({
   payload: z.record(z.string(), z.unknown()),
 });
 export const routeSchema = z.enum(["express", "standard", "consolidated"]);
-export const processingModeSchema = z.enum([
-  "rapid",
-  "balanced",
-  "quality",
-  "hold",
+export const PROCESSING_METHOD_VALUES = [
+  "paper-hydropulp-deink",
+  "plastic-sort-pelletize",
+  "metal-eddy-remelt",
+  "glass-cullet-remelt",
+  "wood-chip-board",
   "landfill",
-]);
+  "incineration",
+] as const;
+export const processingMethodSchema = z.enum(PROCESSING_METHOD_VALUES);
 export const deliveryModeSchema = z.enum(["standard", "low-carbon"]);
 export const pingTypeSchema = z.enum([
   "need-material",
@@ -68,7 +71,7 @@ export type Material = z.infer<typeof materialSchema>;
 export type Grade = z.infer<typeof gradeSchema>;
 export type GameStatus = z.infer<typeof gameStatusSchema>;
 export type Route = z.infer<typeof routeSchema>;
-export type ProcessingMode = z.infer<typeof processingModeSchema>;
+export type ProcessingMethodId = z.infer<typeof processingMethodSchema>;
 export type DeliveryMode = z.infer<typeof deliveryModeSchema>;
 export type MaterialMap = z.infer<typeof materialMapSchema>;
 export type PingType = z.infer<typeof pingTypeSchema>;
@@ -83,6 +86,7 @@ export interface MaterialInventory {
   lockedC: number;
 }
 export type Inventory = Record<Material, MaterialInventory>;
+export type RoleInventories = Record<Role, Inventory>;
 export interface Actor {
   userId: string;
   roles: string[];
@@ -121,7 +125,18 @@ export const processWasteSchema = z.object({
   expectedTeamRevision: z.number().int().nonnegative(),
   payload: z.object({
     wasteSourceId: z.string().min(1),
-    mode: processingModeSchema,
+    methodId: processingMethodSchema,
+  }),
+});
+export const materialTransferSchema = z.object({
+  commandId: commandIdSchema,
+  expectedTeamRevision: z.number().int().nonnegative(),
+  payload: z.object({
+    toRole: roleSchema,
+    materialType: materialSchema,
+    grade: gradeSchema,
+    quantityKg: z.number().int().min(1).max(10_000),
+    route: routeSchema,
   }),
 });
 export const externalPurchaseSchema = z.object({
@@ -212,6 +227,12 @@ export const errorMessages: Record<string, string> = {
     "Your city does not have enough wallet balance for this action.",
   MRF_QUEUE_FULL:
     "The MRF queue is full. Process or wait for an incoming batch first.",
+  PROCESSING_METHOD_INCOMPATIBLE:
+    "This recycling method cannot safely process the selected batch.",
+  MATERIAL_TRANSFER_INVALID:
+    "Choose available material and a different teammate role.",
+  MATERIAL_TRANSFER_UNAVAILABLE:
+    "That material is no longer available in your role inventory.",
   WASTE_SOURCE_EXPIRED: "This waste source has already expired.",
   PROJECT_NOT_ACTIVE: "This project is not currently claimable.",
   PROJECT_ALREADY_CLAIMED: "Another city has already completed this project.",
@@ -219,6 +240,8 @@ export const errorMessages: Record<string, string> = {
     "Your team is still missing required material or role confirmation.",
   HEALTH_TOO_LOW_TO_CLAIM:
     "City Health is too low to start another project. Complete City Care first.",
+  TEAM_HEALTH_RECOVERY:
+    "City Health is recovering. Your team can resume actions when the recovery timer ends.",
   TRADE_OFFER_EXPIRED: "This trade offer has expired.",
   TRADE_NOT_RECIPIENT:
     "Only the receiving team's Broker can accept this trade.",

@@ -1,20 +1,30 @@
 import { createHash } from "node:crypto";
 import type { ClientSession } from "mongoose";
 import mongoose from "mongoose";
-import type { Material, MaterialMap, Role } from "@circular-city/contracts";
+import type {
+  Grade,
+  Inventory,
+  Material,
+  MaterialMap,
+  ProcessingMethodId,
+  Role,
+  Route,
+} from "@circular-city/contracts";
 import {
   HEALTH_MISSIONS,
   MATERIALS,
   STANDARD_SCENARIO,
 } from "@circular-city/game-content";
 import {
+  applyTeamHealthDelta,
   applyProjectClaim,
   assertTradeLockable,
   availableEligibleKg,
   calculateCollection,
   calculateProcessing,
+  emptyInventory,
   healthMissionDelta,
-  healthStatus,
+  isTeamHealthRecoveryActive,
   materialKeys,
   roundHalfUp,
   RuleError,
@@ -26,10 +36,12 @@ import {
 import {
   ActivityEvent,
   Game,
+  GameAnnouncement,
   GameProject,
   GameTeamState,
   HealthMission,
   Idempotency,
+  MaterialTransfer,
   OutboxEvent,
   ProcessJob,
   ProjectWork,
@@ -47,8 +59,20 @@ export type CommandResult = {
 };
 const now = (): number => Date.now();
 const plain = <T>(value: T): T => structuredClone(value);
+const formatAnnouncementMoney = (cents: number): string =>
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(cents / 100);
+const formatAnnouncementCo2 = (kg: number): string =>
+  `${kg >= 0 ? "+" : "-"}${(Math.abs(kg) / 1000).toFixed(1)} t CO2e`;
 
 export class GameService {
+  private roleInventory(state: Record<string, any>, role: Role): Inventory {
+    return state.roleInventories?.[role] as Inventory;
+  }
+
   private spendableWallet(state: Record<string, any>): number {
     return (
       state.walletCents -
@@ -153,6 +177,7 @@ export class GameService {
     terms: TradeTerms,
     session?: ClientSession,
   ): Promise<void> {
+    const brokerInventory = this.roleInventory(state, "broker");
     const openOffers = await TradeOffer.find({
       gameId,
       offeringTeamId: teamId,
@@ -169,7 +194,7 @@ export class GameService {
     for (const line of terms.offered.materials) {
       const key = `${line.materialType}:${line.grade}`;
       const available =
-        state.inventory[line.materialType][line.grade] - (locked.get(key) ?? 0);
+        brokerInventory[line.materialType][line.grade] - (locked.get(key) ?? 0);
       if (available < line.quantityKg)
         throw new RuleError("MATERIAL_LOCKED_FOR_TRADE");
     }
@@ -177,6 +202,7 @@ export class GameService {
   async member(
     gameId: string,
     userId: string,
+    allowHealthRecovery = false,
   ): Promise<{
     team: Record<string, any>;
     state: Record<string, any>;
@@ -198,6 +224,26 @@ export class GameService {
       teamId: String(team._id),
     }).lean();
     if (!state) throw new RuleError("TEAM_STATE_NOT_FOUND");
+    if (
+      !state.roleInventories?.municipality ||
+      !state.roleInventories?.mrf ||
+      !state.roleInventories?.broker
+    ) {
+      state.roleInventories = {
+        municipality: plain(state.inventory),
+        mrf: emptyInventory(),
+        broker: emptyInventory(),
+      };
+      await GameTeamState.updateOne(
+        { _id: state._id },
+        { $set: { roleInventories: state.roleInventories } },
+      );
+    }
+    if (
+      !allowHealthRecovery &&
+      isTeamHealthRecoveryActive(state as TeamState, now())
+    )
+      throw new RuleError("TEAM_HEALTH_RECOVERY");
     return { team, state, role: member.role as Role };
   }
   private assertRole(actual: Role, expected: Role): void {
@@ -265,6 +311,37 @@ export class GameService {
         { $inc: { globalRevision: 1 } },
         { session },
       );
+  }
+  private async announce(
+    gameId: string,
+    key: string,
+    type: "project-win",
+    message: string,
+    payload: Record<string, unknown>,
+    session?: ClientSession,
+  ): Promise<void> {
+    const announcement = (
+      await GameAnnouncement.create(
+        [
+          {
+            gameId,
+            key,
+            type,
+            message,
+            payload,
+            createdAtMs: now(),
+          },
+        ],
+        { session },
+      )
+    )[0];
+    await this.outbox(
+      gameId,
+      "announcement.created",
+      `game:${gameId}`,
+      { announcement: announcement.toObject() },
+      session,
+    );
   }
   async idempotent<T>(
     key: string,
@@ -455,7 +532,7 @@ export class GameService {
     commandId: string,
     expectedRevision: number,
     wasteSourceId: string,
-    mode: "rapid" | "balanced" | "quality" | "hold" | "landfill",
+    methodId: ProcessingMethodId,
   ): Promise<CommandResult> {
     const { state, role } = await this.member(gameId, userId);
     this.assertRole(role, "mrf");
@@ -471,49 +548,19 @@ export class GameService {
     if (!source || !["at_mrf", "held"].includes(source.status))
       throw new RuleError("WASTE_SOURCE_NOT_AVAILABLE");
     if (
-      mode !== "hold" &&
-      (await ProcessJob.exists({
+      await ProcessJob.exists({
         gameId,
         teamId: state.teamId,
         status: "processing",
-      }))
+      })
     )
       throw new RuleError("MRF_ALREADY_PROCESSING");
-    if (mode === "hold") {
-      const holdExpiresAt = Math.min(
-        (source.queueArrivedAt ?? now()) + 45_000,
-        now() + 30_000,
-      );
-      await WasteSource.updateOne(
-        { _id: source._id, status: { $in: ["at_mrf", "held"] } },
-        { $set: { status: "held", holdExpiresAt } },
-      );
-      await this.outbox(
-        gameId,
-        "mrf.queue.updated",
-        `team:${gameId}:${state.teamId}`,
-        { wasteSourceId, status: "held", holdExpiresAt },
-      );
-      return {
-        commandId,
-        teamRevision: state.revision,
-        serverTime: now(),
-        result: { status: "held", holdExpiresAt },
-      };
-    }
-    const calculation = calculateProcessing(source as any, mode);
-    const totalCommittedCost =
-      calculation.processingCostCents + calculation.residueCostCents;
+    const calculation = calculateProcessing(source as any, methodId);
+    const totalCommittedCost = calculation.processingCostCents;
     if (this.spendableWallet(state) < totalCommittedCost)
       throw new RuleError("INSUFFICIENT_WALLET");
-    const duration =
-      mode === "rapid"
-        ? 6000
-        : mode === "balanced"
-          ? 10000
-          : mode === "quality"
-            ? 14000
-            : 4000;
+    const startedAt = now();
+    const dueAt = startedAt + calculation.durationMs;
     const session = await mongoose.startSession();
     try {
       await session.withTransaction(async () => {
@@ -525,8 +572,7 @@ export class GameService {
           },
           {
             $inc: {
-              walletCents: -calculation.processingCostCents,
-              reservedCashCents: calculation.residueCostCents,
+              walletCents: -totalCommittedCost,
               totalCO2Kg: calculation.processingCO2Kg,
               revision: 1,
             },
@@ -547,8 +593,9 @@ export class GameService {
               gameId,
               teamId: state.teamId,
               wasteSourceId,
-              mode,
-              dueAt: now() + duration,
+              methodId,
+              result: calculation,
+              dueAt,
             },
           ],
           { session },
@@ -559,14 +606,14 @@ export class GameService {
           "mrf.processing_started",
           commandId,
           { userId, role, actorType: "player" },
-          { wasteSourceId, mode },
+          { wasteSourceId, methodId, result: calculation, dueAt },
           session,
         );
         await this.outbox(
           gameId,
           "mrf.processing.updated",
           `team:${gameId}:${state.teamId}`,
-          { wasteSourceId, mode, dueAt: now() + duration },
+          { wasteSourceId, methodId, dueAt, result: calculation },
           session,
         );
       });
@@ -576,8 +623,8 @@ export class GameService {
     return {
       commandId,
       teamRevision: expectedRevision + 1,
-      serverTime: now(),
-      result: { wasteSourceId, mode, dueAt: now() + duration },
+      serverTime: startedAt,
+      result: { wasteSourceId, methodId, dueAt, calculation },
     };
   }
   async externalPurchase(
@@ -614,6 +661,7 @@ export class GameService {
           walletCents: -costCents,
           totalCO2Kg: co2Kg,
           [`inventory.${material}.B`]: quantityKg,
+          [`roleInventories.broker.${material}.B`]: quantityKg,
           "provenance.externalKg": quantityKg,
           "metrics.externalPurchasedKg": quantityKg,
           revision: 1,
@@ -647,6 +695,143 @@ export class GameService {
       teamRevision: result.revision,
       serverTime: now(),
       result: { material, quantityKg, costCents, co2Kg },
+    };
+  }
+  async createMaterialTransfer(
+    gameId: string,
+    userId: string,
+    commandId: string,
+    expectedRevision: number,
+    toRole: Role,
+    material: Material,
+    grade: Grade,
+    quantityKg: number,
+    route: Route,
+  ): Promise<CommandResult> {
+    const membership = await this.member(gameId, userId);
+    const fromRole = membership.role;
+    if (fromRole === toRole || quantityKg < 1 || quantityKg > 10_000)
+      throw new RuleError("MATERIAL_TRANSFER_INVALID");
+    const game = await Game.findById(gameId).lean();
+    this.assertStatus(game?.status ?? "", ["active"]);
+    const state = membership.state;
+    if (state.revision !== expectedRevision)
+      throw new RuleError("STALE_TEAM_REVISION");
+    const roleInventory = this.roleInventory(state, fromRole);
+    const lockedGrade = roleInventory[material][`locked${grade}` as const] ?? 0;
+    if (roleInventory[material][grade] - lockedGrade < quantityKg)
+      throw new RuleError("MATERIAL_TRANSFER_UNAVAILABLE");
+    const quote = calculateCollection(
+      {
+        id: commandId,
+        massKg: quantityKg,
+        compositionKg: {
+          paper: material === "paper" ? quantityKg : 0,
+          plastic: material === "plastic" ? quantityKg : 0,
+          metal: material === "metal" ? quantityKg : 0,
+          glass: material === "glass" ? quantityKg : 0,
+          wood: material === "wood" ? quantityKg : 0,
+        },
+        contaminationBasisPoints: 0,
+        status: "available",
+        expiresAt: 0,
+      },
+      route,
+    );
+    if (this.spendableWallet(state) < quote.costCents)
+      throw new RuleError("INSUFFICIENT_WALLET");
+    const departedAt = now();
+    const arrivesAt = departedAt + quote.durationMs;
+    const inventoryPath = `roleInventories.${fromRole}.${material}.${grade}`;
+    const session = await mongoose.startSession();
+    let transfer: any;
+    try {
+      await session.withTransaction(async () => {
+        const changed = await GameTeamState.updateOne(
+          {
+            _id: state._id,
+            revision: expectedRevision,
+            [inventoryPath]: { $gte: quantityKg },
+            ...this.walletCanCover(quote.costCents),
+          },
+          {
+            $inc: {
+              [inventoryPath]: -quantityKg,
+              walletCents: -quote.costCents,
+              totalCO2Kg: quote.co2Kg,
+              revision: 1,
+            },
+          },
+          { session },
+        );
+        if (!changed.modifiedCount)
+          throw new RuleError("MATERIAL_TRANSFER_UNAVAILABLE");
+        transfer = (
+          await MaterialTransfer.create(
+            [
+              {
+                gameId,
+                teamId: state.teamId,
+                commandId,
+                fromRole,
+                toRole,
+                materialType: material,
+                grade,
+                quantityKg,
+                route,
+                costCents: quote.costCents,
+                co2Kg: quote.co2Kg,
+                departedAt,
+                arrivesAt,
+              },
+            ],
+            { session },
+          )
+        )[0];
+        await this.audit(
+          gameId,
+          state.teamId,
+          "material.transfer_dispatched",
+          commandId,
+          { userId, role: fromRole, actorType: "player" },
+          {
+            transferId: String(transfer._id),
+            fromRole,
+            toRole,
+            material,
+            grade,
+            quantityKg,
+            route,
+            quote,
+          },
+          session,
+        );
+        await this.outbox(
+          gameId,
+          "material.transfer.updated",
+          `team:${gameId}:${state.teamId}`,
+          {
+            transferId: String(transfer._id),
+            status: "in_transit",
+            fromRole,
+            toRole,
+            material,
+            grade,
+            quantityKg,
+            route,
+            arrivesAt,
+          },
+          session,
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
+    return {
+      commandId,
+      teamRevision: expectedRevision + 1,
+      serverTime: departedAt,
+      result: { transfer, quote },
     };
   }
   async savePlan(
@@ -847,6 +1032,22 @@ export class GameService {
           { projectId, receipt: applied.receipt },
           session,
         );
+        const winnerCity = `City ${teamDoc.citySlot}`;
+        await this.announce(
+          gameId,
+          `project-win:${projectId}`,
+          "project-win",
+          `${winnerCity} wins the ${project.template.title} project, receiving rewards: ${formatAnnouncementMoney(applied.receipt.netRevenueCents)} revenue & ${formatAnnouncementCo2(project.template.co2ImpactKg)}.`,
+          {
+            projectId,
+            winnerTeamId: membership.state.teamId,
+            winnerCity,
+            projectName: project.template.title,
+            revenueCents: applied.receipt.netRevenueCents,
+            co2ImpactKg: project.template.co2ImpactKg,
+          },
+          session,
+        );
         await this.outbox(
           gameId,
           "project.claimed",
@@ -916,7 +1117,10 @@ export class GameService {
           }).session(session)) >= 2
         )
           throw new RuleError("TRADE_OFFER_LIMIT");
-        assertTradeLockable(state as any, terms);
+        assertTradeLockable(
+          { ...state, inventory: this.roleInventory(state, "broker") } as any,
+          terms,
+        );
         await this.assertTradeMaterialsAvailable(
           gameId,
           state.teamId,
@@ -935,6 +1139,15 @@ export class GameService {
               item.quantityKg;
             const gradeKey = `inventory.${item.materialType}.locked${item.grade}`;
             increments[gradeKey] = (increments[gradeKey] ?? 0) + item.quantityKg;
+            increments[
+              `roleInventories.broker.${item.materialType}.lockedKg`
+            ] =
+              (increments[
+                `roleInventories.broker.${item.materialType}.lockedKg`
+              ] ?? 0) + item.quantityKg;
+            const roleGradeKey = `roleInventories.broker.${item.materialType}.locked${item.grade}`;
+            increments[roleGradeKey] =
+              (increments[roleGradeKey] ?? 0) + item.quantityKg;
           }
         const update = await GameTeamState.updateOne(
           { _id: state._id, revision: expectedRevision },
@@ -1046,6 +1259,13 @@ export class GameService {
               line.quantityKg;
             const gradeKey = `inventory.${line.materialType}.locked${line.grade}`;
             unlock[gradeKey] = (unlock[gradeKey] ?? 0) - line.quantityKg;
+            unlock[`roleInventories.broker.${line.materialType}.lockedKg`] =
+              (unlock[
+                `roleInventories.broker.${line.materialType}.lockedKg`
+              ] ?? 0) - line.quantityKg;
+            const roleGradeKey = `roleInventories.broker.${line.materialType}.locked${line.grade}`;
+            unlock[roleGradeKey] =
+              (unlock[roleGradeKey] ?? 0) - line.quantityKg;
           }
         if (action !== "accept") {
           await GameTeamState.updateOne(
@@ -1069,8 +1289,13 @@ export class GameService {
             },
           };
         } else {
+          const offeringBrokerInventory = this.roleInventory(offering, "broker");
+          const receivingBrokerInventory = this.roleInventory(receiving, "broker");
           for (const line of terms.offered.materials)
-            if (offering.inventory[line.materialType][line.grade] < line.quantityKg)
+            if (
+              offeringBrokerInventory[line.materialType][line.grade] <
+              line.quantityKg
+            )
               throw new RuleError("MATERIAL_LOCKED_FOR_TRADE");
 
           const receivingLocks = new Map<string, number>();
@@ -1109,7 +1334,7 @@ export class GameService {
               const quantity = Math.min(
                 Math.max(
                   0,
-                  receiving.inventory[line.materialType][grade] -
+                  receivingBrokerInventory[line.materialType][grade] -
                     (receivingLocks.get(key) ?? 0),
                 ),
                 remaining,
@@ -1118,6 +1343,12 @@ export class GameService {
               receivingInc[`inventory.${line.materialType}.${grade}`] =
                 (receivingInc[`inventory.${line.materialType}.${grade}`] ?? 0) -
                 quantity;
+              receivingInc[
+                `roleInventories.broker.${line.materialType}.${grade}`
+              ] =
+                (receivingInc[
+                  `roleInventories.broker.${line.materialType}.${grade}`
+                ] ?? 0) - quantity;
               requestedMaterialTransfers.push({
                 materialType: line.materialType,
                 grade,
@@ -1173,9 +1404,17 @@ export class GameService {
             revision: 1,
           });
           for (const line of terms.offered.materials)
-            offeredInc[`inventory.${line.materialType}.${line.grade}`] =
-              (offeredInc[`inventory.${line.materialType}.${line.grade}`] ??
-                0) - line.quantityKg;
+            {
+              offeredInc[`inventory.${line.materialType}.${line.grade}`] =
+                (offeredInc[`inventory.${line.materialType}.${line.grade}`] ??
+                  0) - line.quantityKg;
+              offeredInc[
+                `roleInventories.broker.${line.materialType}.${line.grade}`
+              ] =
+                (offeredInc[
+                  `roleInventories.broker.${line.materialType}.${line.grade}`
+                ] ?? 0) - line.quantityKg;
+            }
           await GameTeamState.updateOne(
             { _id: offering._id },
             { $inc: offeredInc },
@@ -1295,11 +1534,15 @@ export class GameService {
       if (completed.modifiedCount) {
         const team = await GameTeamState.findById(membership.state._id).lean();
         if (team) {
-          const health = Math.max(0, Math.min(100, team.health + outcome.delta));
+          const healthChange = applyTeamHealthDelta(
+            team as TeamState,
+            outcome.delta,
+            now(),
+          );
           await GameTeamState.updateOne(
             { _id: team._id },
             {
-              $set: { health, status: healthStatus(health) },
+              $set: healthChange,
               $inc: { revision: 1 },
             },
           );

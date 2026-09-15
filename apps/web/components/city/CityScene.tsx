@@ -7,9 +7,10 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MutableRefObject,
 } from "react";
-import { OrthographicCamera, type Group } from "three";
-import type { Material } from "@circular-city/contracts";
+import { MathUtils, OrthographicCamera, type Group } from "three";
+import type { Material, Role } from "@circular-city/contracts";
 import { buildCityRenderModel } from "./cityRenderModel";
 import type {
   CityFacility,
@@ -123,6 +124,29 @@ const projectColor: Record<CityProject["status"], string> = {
   cancelled: "#875d73",
 };
 
+const roleTransferPositions = {
+  municipality: [-5.4, 0.62, 1.2] as Position,
+  mrf: [-2.2, 0.62, -4.2] as Position,
+  broker: [5.3, 0.62, -1.5] as Position,
+} as const;
+
+const avatarSpawns: Record<Role, Position> = {
+  municipality: [-4.25, 0, -0.2],
+  mrf: [-0.95, 0, -3.25],
+  broker: [4.15, 0, -0.15],
+};
+
+const avatarStyles: Record<
+  Role,
+  { body: string; accent: string; hat: "crown" | "helmet" | "cap" }
+> = {
+  municipality: { body: "#1ea99a", accent: "#fff0a8", hat: "crown" },
+  mrf: { body: "#6887dc", accent: "#d6f6ff", hat: "helmet" },
+  broker: { body: "#e9953d", accent: "#ffe1a3", hat: "cap" },
+};
+
+const islandAvatarBoundary = 7.25;
+
 const facilityColorStyle = (
   color: string,
 ): CSSProperties & { "--facility-color": string } => ({
@@ -221,6 +245,13 @@ export function CityScene({
         </span>
       </div>
 
+      {webGlAvailable && (
+        <div className={styles.avatarControls}>
+          <strong>You: {model.role.toUpperCase()}</strong>
+          <span>WASD move · Space jump</span>
+        </div>
+      )}
+
       <label className={styles.qualityControl}>
         Scene
         <select
@@ -291,10 +322,11 @@ function CityWorld({
       <hemisphereLight args={["#e6fff4", "#31575a", 1.15]} />
       <group position={[0, cityVerticalOffset, 0]}>
         <CityGround health={model.health} />
-        <CircularLoop reducedMotion={reducedMotion} />
+        <CircularLoop />
         <AmbientTraffic reducedMotion={reducedMotion} />
         <PedestrianFlow reducedMotion={reducedMotion} />
         <Neighborhood />
+        <TeamAvatars controlledRole={model.role} reducedMotion={reducedMotion} />
         <Facility
           active={model.waste.available > 0}
           color={facilities[0]!.color}
@@ -425,35 +457,35 @@ function Neighborhood() {
   );
 }
 
-function CircularLoop({ reducedMotion }: { reducedMotion: boolean }) {
-  const rails = useRef<Group>(null);
-  useFrame(({ clock }) => {
-    if (!rails.current || reducedMotion) return;
-    rails.current.rotation.y = Math.sin(clock.getElapsedTime() * 0.2) * 0.012;
-  });
-
+function CircularLoop() {
   return (
-    <group ref={rails}>
-      <mesh position={[0, 0.055, 0]} rotation-x={Math.PI / 2}>
-        <torusGeometry args={[6.05, 0.43, 12, 80]} />
+    <group>
+      <mesh position={[0, 0.03, 0]} rotation-x={-Math.PI / 2} receiveShadow>
+        <ringGeometry args={[5.55, 6.48, 96]} />
         <meshStandardMaterial color="#34464b" roughness={0.72} />
       </mesh>
-      <mesh position={[0, 0.075, 0]} rotation-x={Math.PI / 2}>
-        <torusGeometry args={[6.05, 0.055, 8, 80]} />
+      <mesh position={[0, 0.038, 0]} rotation-x={-Math.PI / 2}>
+        <ringGeometry args={[6.31, 6.4, 96]} />
         <meshStandardMaterial
           color="#f0cd73"
           emissive="#80692f"
           emissiveIntensity={0.18}
         />
       </mesh>
-      <mesh position={[0, 0.08, 0]} rotation-x={Math.PI / 2}>
-        <torusGeometry args={[5.58, 0.045, 8, 80]} />
-        <meshStandardMaterial
-          color="#c5d4d6"
-          metalness={0.52}
-          roughness={0.35}
-        />
-      </mesh>
+      {Array.from({ length: 28 }, (_, index) => {
+        const theta = (index / 28) * Math.PI * 2;
+        const radius = 6.0;
+        return (
+          <mesh
+            key={index}
+            position={[Math.cos(theta) * radius, 0.052, Math.sin(theta) * radius]}
+            rotation-y={-theta}
+          >
+            <boxGeometry args={[0.08, 0.018, 0.28]} />
+            <meshStandardMaterial color="#dbe9df" roughness={0.5} />
+          </mesh>
+        );
+      })}
     </group>
   );
 }
@@ -584,6 +616,265 @@ function Pedestrian({
         <sphereGeometry args={[0.07, 10, 10]} />
         <meshStandardMaterial color="#f2c8a0" roughness={0.75} />
       </mesh>
+    </group>
+  );
+}
+
+function useAvatarKeyboard() {
+  const keys = useRef(new Set<string>());
+
+  useEffect(() => {
+    const isUiControl = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      return (
+        target.isContentEditable ||
+        ["INPUT", "TEXTAREA", "SELECT", "BUTTON", "A"].includes(
+          target.tagName,
+        ) ||
+        Boolean(target.closest('[role="button"], [role="tab"]'))
+      );
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isUiControl(event.target)) return;
+      if (![
+        "KeyW",
+        "KeyA",
+        "KeyS",
+        "KeyD",
+        "Space",
+      ].includes(event.code))
+        return;
+      event.preventDefault();
+      keys.current.add(event.code);
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      keys.current.delete(event.code);
+    };
+    const clearKeys = () => keys.current.clear();
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", clearKeys);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", clearKeys);
+    };
+  }, []);
+
+  return keys;
+}
+
+function TeamAvatars({
+  controlledRole,
+  reducedMotion,
+}: {
+  controlledRole: Role;
+  reducedMotion: boolean;
+}) {
+  const keys = useAvatarKeyboard();
+  return (
+    <group>
+      {(["municipality", "mrf", "broker"] as Role[]).map((role) => (
+        <RoleAvatar
+          controlled={role === controlledRole}
+          key={role}
+          keys={keys}
+          reducedMotion={reducedMotion}
+          role={role}
+        />
+      ))}
+    </group>
+  );
+}
+
+function RoleAvatar({
+  controlled,
+  keys,
+  reducedMotion,
+  role,
+}: {
+  controlled: boolean;
+  keys: MutableRefObject<Set<string>>;
+  reducedMotion: boolean;
+  role: Role;
+}) {
+  const avatar = useRef<Group>(null);
+  const visual = useRef<Group>(null);
+  const leftArm = useRef<Group>(null);
+  const rightArm = useRef<Group>(null);
+  const leftLeg = useRef<Group>(null);
+  const rightLeg = useRef<Group>(null);
+  const movement = useRef({
+    x: avatarSpawns[role][0],
+    z: avatarSpawns[role][2],
+    velocityX: 0,
+    velocityZ: 0,
+    jumpHeight: 0,
+    jumpVelocity: 0,
+    heading: 0,
+    spaceWasDown: false,
+  });
+  const style = avatarStyles[role];
+
+  useFrame(({ clock }, delta) => {
+    if (!avatar.current || !visual.current) return;
+    const state = movement.current;
+    const inputX =
+      (keys.current.has("KeyD") ? 1 : 0) - (keys.current.has("KeyA") ? 1 : 0);
+    const inputZ =
+      (keys.current.has("KeyS") ? 1 : 0) - (keys.current.has("KeyW") ? 1 : 0);
+    const inputLength = Math.hypot(inputX, inputZ);
+    const walking = controlled && inputLength > 0.01;
+    const normalizedX = inputLength ? inputX / inputLength : 0;
+    const normalizedZ = inputLength ? inputZ / inputLength : 0;
+    const targetSpeed = walking ? 3.15 : 0;
+
+    if (controlled) {
+      state.velocityX = MathUtils.damp(
+        state.velocityX,
+        normalizedX * targetSpeed,
+        14,
+        delta,
+      );
+      state.velocityZ = MathUtils.damp(
+        state.velocityZ,
+        normalizedZ * targetSpeed,
+        14,
+        delta,
+      );
+      const nextX = state.x + state.velocityX * delta;
+      const nextZ = state.z + state.velocityZ * delta;
+      const distance = Math.hypot(nextX, nextZ);
+      if (distance > islandAvatarBoundary) {
+        state.x = (nextX / distance) * islandAvatarBoundary;
+        state.z = (nextZ / distance) * islandAvatarBoundary;
+        state.velocityX *= 0.22;
+        state.velocityZ *= 0.22;
+      } else {
+        state.x = nextX;
+        state.z = nextZ;
+      }
+      if (walking) {
+        const nextHeading = Math.atan2(state.velocityX, state.velocityZ);
+        const angleDelta = Math.atan2(
+          Math.sin(nextHeading - state.heading),
+          Math.cos(nextHeading - state.heading),
+        );
+        state.heading += MathUtils.damp(0, angleDelta, 15, delta);
+      }
+      const spaceDown = keys.current.has("Space");
+      if (spaceDown && !state.spaceWasDown && state.jumpHeight <= 0.001) {
+        state.jumpVelocity = 4.8;
+      }
+      state.spaceWasDown = spaceDown;
+    }
+
+    state.jumpVelocity -= 12.5 * delta;
+    state.jumpHeight = Math.max(0, state.jumpHeight + state.jumpVelocity * delta);
+    if (state.jumpHeight === 0) state.jumpVelocity = 0;
+    avatar.current.position.set(state.x, state.jumpHeight, state.z);
+    avatar.current.rotation.y = state.heading;
+
+    const time = clock.getElapsedTime();
+    const stepStrength = reducedMotion ? 0 : walking ? 1 : controlled ? 0.12 : 0.18;
+    const step = Math.sin(time * (walking ? 12 : 3.2) + avatarSpawns[role][0]);
+    const elastic = step * stepStrength;
+    visual.current.position.y = 0.06 + Math.abs(elastic) * 0.055;
+    visual.current.scale.set(
+      1 + elastic * 0.045,
+      1 - Math.abs(elastic) * 0.07,
+      1 + elastic * 0.045,
+    );
+    leftArm.current?.rotation.set(elastic * 0.7, 0, 0.08);
+    rightArm.current?.rotation.set(-elastic * 0.7, 0, -0.08);
+    leftLeg.current?.rotation.set(-elastic * 0.65, 0, 0);
+    rightLeg.current?.rotation.set(elastic * 0.65, 0, 0);
+  });
+
+  return (
+    <group ref={avatar} position={avatarSpawns[role]}>
+      <mesh position={[0, 0.018, 0]} rotation-x={-Math.PI / 2}>
+        <circleGeometry args={[controlled ? 0.48 : 0.36, 18]} />
+        <meshBasicMaterial
+          color={controlled ? style.accent : "#f3f5e8"}
+          opacity={controlled ? 0.74 : 0.34}
+          transparent
+        />
+      </mesh>
+      <group ref={visual}>
+        <group ref={leftLeg} position={[-0.1, 0.16, 0]}>
+          <mesh castShadow position={[0, 0.09, 0]}>
+            <capsuleGeometry args={[0.06, 0.16, 4, 8]} />
+            <meshStandardMaterial color="#31434a" roughness={0.72} />
+          </mesh>
+        </group>
+        <group ref={rightLeg} position={[0.1, 0.16, 0]}>
+          <mesh castShadow position={[0, 0.09, 0]}>
+            <capsuleGeometry args={[0.06, 0.16, 4, 8]} />
+            <meshStandardMaterial color="#31434a" roughness={0.72} />
+          </mesh>
+        </group>
+        <mesh castShadow position={[0, 0.46, 0]}>
+          <capsuleGeometry args={[0.18, 0.34, 4, 10]} />
+          <meshStandardMaterial color={style.body} roughness={0.58} />
+        </mesh>
+        <group ref={leftArm} position={[-0.22, 0.56, 0]}>
+          <mesh castShadow position={[0, -0.1, 0]}>
+            <capsuleGeometry args={[0.05, 0.15, 4, 8]} />
+            <meshStandardMaterial color={style.accent} roughness={0.64} />
+          </mesh>
+        </group>
+        <group ref={rightArm} position={[0.22, 0.56, 0]}>
+          <mesh castShadow position={[0, -0.1, 0]}>
+            <capsuleGeometry args={[0.05, 0.15, 4, 8]} />
+            <meshStandardMaterial color={style.accent} roughness={0.64} />
+          </mesh>
+        </group>
+        <mesh castShadow position={[0, 0.82, 0]}>
+          <sphereGeometry args={[0.19, 14, 12]} />
+          <meshStandardMaterial color="#f4c89e" roughness={0.78} />
+        </mesh>
+        {[-0.065, 0.065].map((offset) => (
+          <mesh key={offset} position={[offset, 0.85, 0.17]}>
+            <sphereGeometry args={[0.025, 8, 8]} />
+            <meshBasicMaterial color="#24343d" />
+          </mesh>
+        ))}
+        {style.hat === "crown" && (
+          <group position={[0, 1.04, 0]}>
+            {[-0.1, 0, 0.1].map((offset) => (
+              <mesh key={offset} position={[offset, 0.06 + (offset === 0 ? 0.04 : 0), 0]}>
+                <coneGeometry args={[0.045, 0.14, 4]} />
+                <meshStandardMaterial color={style.accent} roughness={0.45} />
+              </mesh>
+            ))}
+          </group>
+        )}
+        {style.hat === "helmet" && (
+          <group position={[0, 1.0, 0]}>
+            <mesh>
+              <sphereGeometry args={[0.21, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2]} />
+              <meshStandardMaterial color={style.accent} roughness={0.48} />
+            </mesh>
+            <mesh position={[0, -0.035, 0.18]}>
+              <boxGeometry args={[0.27, 0.045, 0.04]} />
+              <meshStandardMaterial color="#4b6488" roughness={0.4} />
+            </mesh>
+          </group>
+        )}
+        {style.hat === "cap" && (
+          <group position={[0, 1.0, 0]}>
+            <mesh>
+              <cylinderGeometry args={[0.16, 0.18, 0.1, 14]} />
+              <meshStandardMaterial color={style.accent} roughness={0.5} />
+            </mesh>
+            <mesh position={[0, -0.035, 0.18]}>
+              <boxGeometry args={[0.24, 0.035, 0.13]} />
+              <meshStandardMaterial color={style.accent} roughness={0.5} />
+            </mesh>
+          </group>
+        )}
+      </group>
     </group>
   );
 }
@@ -846,6 +1137,11 @@ function TransitMarker({
       ? [[-5.1, 0.48, 1.3], [-1.1, 0.58, -4.1]]
       : transit.kind === "processing"
         ? [[-2.1, 0.6, -4.0], [1.4, 0.58, 2.6]]
+        : transit.kind === "material-transfer" && transit.fromRole && transit.toRole
+          ? [
+              roleTransferPositions[transit.fromRole],
+              roleTransferPositions[transit.toRole],
+            ]
         : [[5.3, 0.56, -1.4], [1.7, 0.54, 2.7]];
   const durationMs =
     transit.route === "express"

@@ -2,29 +2,40 @@ import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { Emitter } from "@socket.io/redis-emitter";
 import Redis from "ioredis";
+import mongoose from "mongoose";
+import type { Material, ProcessingMethodId } from "@circular-city/contracts";
 import {
   HEALTH_MISSIONS,
   STANDARD_SCENARIO,
 } from "@circular-city/game-content";
 import {
   addMaterial,
+  applyTeamHealthDelta,
   calculateRankings,
   calculateProcessing,
+  emptyRoleInventories,
+  HEALTH_RECOVERY_HEALTH,
   healthMissionDelta,
   healthStatus,
   materialKeys,
   type TeamState,
 } from "@circular-city/game-engine";
-import { dueScheduleSlots, projectForSequence } from "./scheduler.js";
+import {
+  dueScheduleSlots,
+  dueTimeAnnouncements,
+  projectForSequence,
+} from "./scheduler.js";
 import { readEnv } from "../../api/src/env.js";
 import { connectMongo } from "../../api/src/database.js";
 import {
   ActivityEvent,
   Game,
+  GameAnnouncement,
   GameResultTeam,
   GameProject,
   GameTeamState,
   HealthMission,
+  MaterialTransfer,
   OutboxEvent,
   ProcessJob,
   TradeOffer,
@@ -47,6 +58,21 @@ const materialMap = () => ({
   glass: 0,
   wood: 0,
 });
+const recoveryMethodByMaterial: Record<Material, ProcessingMethodId> = {
+  paper: "paper-hydropulp-deink",
+  plastic: "plastic-sort-pelletize",
+  metal: "metal-eddy-remelt",
+  glass: "glass-cullet-remelt",
+  wood: "wood-chip-board",
+};
+const methodForLegacyJob = (job: any, source: any): ProcessingMethodId => {
+  if (job.methodId) return job.methodId;
+  if (job.mode === "landfill") return "landfill";
+  const dominant = materialKeys
+    .map((material) => ({ material, kg: source.compositionKg?.[material] ?? 0 }))
+    .sort((left, right) => right.kg - left.kg)[0]?.material;
+  return recoveryMethodByMaterial[dominant ?? "paper"];
+};
 const due = async (
   gameId: string,
   type: string,
@@ -82,6 +108,33 @@ const activity = async (
     visibility: "facilitator",
     payload,
   });
+};
+const announce = async (
+  gameId: string,
+  key: string,
+  type: "time" | "project-win",
+  message: string,
+  payload: Record<string, unknown>,
+): Promise<void> => {
+  let announcement: any;
+  try {
+    announcement = await GameAnnouncement.create({
+      gameId,
+      key,
+      type,
+      message,
+      payload,
+      createdAtMs: now(),
+    });
+  } catch (error) {
+    if ((error as { code?: number }).code === 11000) return;
+    throw error;
+  }
+  await due(
+    gameId,
+    "announcement.created",
+    { announcement: announcement.toObject() },
+  );
 };
 const seeded = (seed: number, cursor: number): number =>
   ((seed * 1103515245 + cursor * 12345) >>> 0) % 10000;
@@ -267,6 +320,24 @@ async function spawnWaste(game: any, tickIndex: number): Promise<void> {
     );
   }
 }
+
+async function ensureTimeAnnouncements(
+  game: any,
+  current: number,
+): Promise<void> {
+  if (typeof game.activeEndsAt !== "number" || current >= game.activeEndsAt)
+    return;
+  for (const milestone of dueTimeAnnouncements(game.activeEndsAt, current)) {
+    await announce(
+      String(game._id),
+      `time:${milestone.remainingMs}`,
+      "time",
+      milestone.message,
+      { remainingMs: milestone.remainingMs },
+    );
+  }
+}
+
 async function advanceGame(game: any): Promise<void> {
   const current = now();
   if (game.status === "scheduled" && current >= game.startedAt) {
@@ -313,6 +384,12 @@ async function advanceGame(game: any): Promise<void> {
         release[key] = (release[key] ?? 0) - line.quantityKg;
         const gradeKey = `inventory.${line.materialType}.locked${line.grade}`;
         release[gradeKey] = (release[gradeKey] ?? 0) - line.quantityKg;
+        release[`roleInventories.broker.${line.materialType}.lockedKg`] =
+          (release[`roleInventories.broker.${line.materialType}.lockedKg`] ?? 0) -
+          line.quantityKg;
+        const roleGradeKey = `roleInventories.broker.${line.materialType}.locked${line.grade}`;
+        release[roleGradeKey] =
+          (release[roleGradeKey] ?? 0) - line.quantityKg;
       }
 
       const cancelled = await TradeOffer.updateOne(
@@ -379,6 +456,7 @@ async function advanceGame(game: any): Promise<void> {
     return;
   }
   if (game.status !== "active") return;
+  await ensureTimeAnnouncements(game, current);
   const activeStartedAt = inferActiveStartAt(game);
   if (game.activeStartedAt !== activeStartedAt) {
     game.activeStartedAt = activeStartedAt;
@@ -563,6 +641,66 @@ async function advanceGame(game: any): Promise<void> {
 }
 async function settleDueEntities(): Promise<void> {
   const current = now();
+  for (const zeroHealthTeam of await GameTeamState.find({
+    health: { $lte: 0 },
+    $or: [
+      { healthRecoveryUntil: { $exists: false } },
+      { healthRecoveryUntil: null },
+    ],
+  }).lean()) {
+    const healthChange = applyTeamHealthDelta(
+      zeroHealthTeam as TeamState,
+      0,
+      current,
+    );
+    const changed = await GameTeamState.updateOne(
+      {
+        _id: zeroHealthTeam._id,
+        health: { $lte: 0 },
+        $or: [
+          { healthRecoveryUntil: { $exists: false } },
+          { healthRecoveryUntil: null },
+        ],
+      },
+      { $set: healthChange, $inc: { revision: 1 } },
+    );
+    if (!changed.modifiedCount) continue;
+    await due(
+      zeroHealthTeam.gameId,
+      "team.health.recovery.started",
+      {
+        health: 0,
+        healthRecoveryUntil: healthChange.healthRecoveryUntil,
+      },
+      `team:${zeroHealthTeam.gameId}:${zeroHealthTeam.teamId}`,
+    );
+  }
+  for (const recoveringTeam of await GameTeamState.find({
+    healthRecoveryUntil: { $lte: current },
+  }).lean()) {
+    const recovered = await GameTeamState.findOneAndUpdate(
+      {
+        _id: recoveringTeam._id,
+        healthRecoveryUntil: { $lte: current },
+      },
+      {
+        $set: {
+          health: HEALTH_RECOVERY_HEALTH,
+          status: healthStatus(HEALTH_RECOVERY_HEALTH),
+        },
+        $unset: { healthRecoveryUntil: 1 },
+        $inc: { revision: 1 },
+      },
+      { new: true },
+    ).lean();
+    if (!recovered) continue;
+    await due(
+      recoveringTeam.gameId,
+      "team.health.recovery.completed",
+      { health: HEALTH_RECOVERY_HEALTH },
+      `team:${recoveringTeam.gameId}:${recoveringTeam.teamId}`,
+    );
+  }
   for (const transport of await Transport.find({
     status: "in_transit",
     arrivesAt: { $lte: current },
@@ -586,6 +724,54 @@ async function settleDueEntities(): Promise<void> {
       `team:${transport.gameId}:${transport.teamId}`,
     );
   }
+  for (const pendingTransfer of await MaterialTransfer.find({
+    status: "in_transit",
+    arrivesAt: { $lte: current },
+  })) {
+    const session = await mongoose.startSession();
+    let completedTransfer: any = null;
+    try {
+      await session.withTransaction(async () => {
+        completedTransfer = await MaterialTransfer.findOneAndUpdate(
+          { _id: pendingTransfer._id, status: "in_transit" },
+          { $set: { status: "completed", completedAt: current } },
+          { new: true, session },
+        ).lean();
+        if (!completedTransfer) return;
+        const destinationPath = `roleInventories.${completedTransfer.toRole}.${completedTransfer.materialType}.${completedTransfer.grade}`;
+        await GameTeamState.updateOne(
+          {
+            gameId: completedTransfer.gameId,
+            teamId: completedTransfer.teamId,
+          },
+          {
+            $inc: {
+              [destinationPath]: completedTransfer.quantityKg,
+              revision: 1,
+            },
+          },
+          { session },
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
+    if (!completedTransfer) continue;
+    await due(
+      completedTransfer.gameId,
+      "material.transfer.updated",
+      {
+        transferId: String(completedTransfer._id),
+        status: "completed",
+        fromRole: completedTransfer.fromRole,
+        toRole: completedTransfer.toRole,
+        material: completedTransfer.materialType,
+        grade: completedTransfer.grade,
+        quantityKg: completedTransfer.quantityKg,
+      },
+      `team:${completedTransfer.gameId}:${completedTransfer.teamId}`,
+    );
+  }
   for (const source of await WasteSource.find({
     status: "available",
     expiresAt: { $lte: current },
@@ -600,8 +786,8 @@ async function settleDueEntities(): Promise<void> {
       teamId: source.teamId,
     });
     if (team) {
-      team.health = Math.max(0, team.health - 4);
-      team.status = healthStatus(team.health);
+      const healthChange = applyTeamHealthDelta(team as TeamState, -4, current);
+      Object.assign(team, healthChange);
       team.revision += 1;
       await team.save();
     }
@@ -612,7 +798,11 @@ async function settleDueEntities(): Promise<void> {
     await due(
       source.gameId,
       "team.metrics.updated",
-      { healthDelta: -4, reason: "waste-expired" },
+      {
+        healthDelta: -4,
+        reason: "waste-expired",
+        healthRecoveryUntil: team?.healthRecoveryUntil ?? null,
+      },
       `team:${source.gameId}:${source.teamId}`,
     );
   }
@@ -631,28 +821,36 @@ async function settleDueEntities(): Promise<void> {
       teamId: job.teamId,
     });
     if (!source || !team) continue;
-    const result = calculateProcessing(source as any, job.mode as any);
-    if (job.mode !== "landfill")
+    const methodId = methodForLegacyJob(job, source);
+    const result = job.result ?? calculateProcessing(source as any, methodId);
+    if (!team.roleInventories?.mrf) {
+      const defaults = emptyRoleInventories();
+      team.roleInventories = { ...defaults, ...(team.roleInventories ?? {}) };
+    }
+    if (result.grade)
       for (const material of materialKeys)
-        addMaterial(
-          team.inventory,
-          material,
-          result.grade,
-          result.outputKg[material],
-        );
-    team.walletCents -= result.residueCostCents;
-    team.reservedCashCents = Math.max(
-      0,
-      (team.reservedCashCents ?? 0) - result.residueCostCents,
+        if (result.outputKg[material] > 0) {
+          addMaterial(team.inventory, material, result.grade, result.outputKg[material]);
+          addMaterial(
+            team.roleInventories.mrf,
+            material,
+            result.grade,
+            result.outputKg[material],
+          );
+        }
+    team.markModified("roleInventories");
+    const healthChange = applyTeamHealthDelta(
+      team as TeamState,
+      result.healthDelta,
+      current,
     );
-    team.totalCO2Kg += result.residueCO2Kg;
-    team.health = Math.max(0, team.health + result.healthDelta);
-    team.status = healthStatus(team.health);
+    Object.assign(team, healthChange);
     team.metrics.recoveredKg += materialKeys.reduce(
       (sum, material) => sum + result.outputKg[material],
       0,
     );
-    team.metrics.landfilledKg += result.residueKg;
+    if (["landfill", "incineration"].includes(methodId))
+      team.metrics.landfilledKg += result.residueKg;
     team.provenance.recoveredKg += materialKeys.reduce(
       (sum, material) => sum + result.outputKg[material],
       0,
@@ -662,13 +860,23 @@ async function settleDueEntities(): Promise<void> {
     await WasteSource.updateOne(
       { _id: source._id },
       {
-        $set: { status: job.mode === "landfill" ? "landfilled" : "processed" },
+        $set: {
+          status: ["landfill", "incineration"].includes(methodId)
+            ? "landfilled"
+            : "processed",
+        },
       },
     );
     await due(
       job.gameId,
       "mrf.processing.updated",
-      { wasteSourceId: String(source._id), status: "completed", result },
+      {
+        wasteSourceId: String(source._id),
+        methodId,
+        status: "completed",
+        result,
+        healthRecoveryUntil: team.healthRecoveryUntil,
+      },
       `team:${job.gameId}:${job.teamId}`,
     );
   }
@@ -684,7 +892,8 @@ async function settleDueEntities(): Promise<void> {
       gameId: held.gameId,
       teamId: held.teamId,
       wasteSourceId: String(held._id),
-      mode: "landfill",
+      methodId: "landfill",
+      result: calculateProcessing(held as any, "landfill"),
       dueAt: current + 4000,
     });
     await activity(held.gameId, held.teamId, "mrf.hold_auto_landfill", {
@@ -723,8 +932,12 @@ async function settleDueEntities(): Promise<void> {
       teamId: mission.teamId,
     });
     if (team) {
-      team.health = Math.max(0, Math.min(100, team.health + timeoutOutcome.delta));
-      team.status = healthStatus(team.health);
+      const healthChange = applyTeamHealthDelta(
+        team as TeamState,
+        timeoutOutcome.delta,
+        current,
+      );
+      Object.assign(team, healthChange);
       team.revision += 1;
       await team.save();
     }
@@ -736,6 +949,7 @@ async function settleDueEntities(): Promise<void> {
         status: "expired",
         reason: "timeout",
         healthDelta: timeoutOutcome.delta,
+        healthRecoveryUntil: team?.healthRecoveryUntil ?? null,
       },
       `team:${mission.gameId}:${mission.teamId}`,
     );
@@ -786,6 +1000,8 @@ async function settleDueEntities(): Promise<void> {
         {
           $inc: {
             [`inventory.${line.materialType}.${line.grade}`]: line.quantityKg,
+            [`roleInventories.broker.${line.materialType}.${line.grade}`]:
+              line.quantityKg,
             "provenance.tradedKg": line.quantityKg,
             "metrics.tradedKg": line.quantityKg,
             revision: 1,
@@ -805,6 +1021,8 @@ async function settleDueEntities(): Promise<void> {
         {
           $inc: {
             [`inventory.${line.materialType}.${line.grade}`]: line.quantityKg,
+            [`roleInventories.broker.${line.materialType}.${line.grade}`]:
+              line.quantityKg,
             "provenance.tradedKg": line.quantityKg,
             "metrics.tradedKg": line.quantityKg,
             revision: 1,

@@ -1,4 +1,10 @@
-import type { Material, MaterialMap, Role } from "@circular-city/contracts";
+import type {
+  Grade,
+  Material,
+  MaterialMap,
+  ProcessingMethodId,
+  Role,
+} from "@circular-city/contracts";
 
 export interface MaterialDefinition {
   key: Material;
@@ -33,6 +39,21 @@ export interface HealthMissionTemplate {
   explanation: string;
   questions: Record<Role, string>;
   options: Record<Role, HealthOption[]>;
+}
+
+export interface ProcessingMethodDefinition {
+  id: ProcessingMethodId;
+  kind: "recycling" | "disposal";
+  material?: Material;
+  title: string;
+  shortLabel: string;
+  description: string;
+  durationMs: number;
+  costCentsPerKg: number;
+  co2MilliKgPerKg: number;
+  recoveryRateBasisPoints: number;
+  gradeThresholds?: Array<{ maxContaminationBasisPoints: number; grade: Grade }>;
+  healthPenaltyOffset?: number;
 }
 
 export const MATERIALS: Record<Material, MaterialDefinition> = {
@@ -82,6 +103,130 @@ export const MATERIALS: Record<Material, MaterialDefinition> = {
     referenceTradeValueCentsPerKg: 10,
   },
 };
+
+export const PROCESSING_METHODS: ProcessingMethodDefinition[] = [
+  {
+    id: "paper-hydropulp-deink",
+    kind: "recycling",
+    material: "paper",
+    title: "Hydropulp & De-ink",
+    shortLabel: "Recycle paper",
+    description:
+      "Mix paper with water into pulp, screen contaminants, then use flotation bubbles to remove ink before the fibres return to production.",
+    durationMs: 12_000,
+    costCentsPerKg: 8,
+    co2MilliKgPerKg: 120,
+    recoveryRateBasisPoints: 8_500,
+    gradeThresholds: [
+      { maxContaminationBasisPoints: 500, grade: "A" },
+      { maxContaminationBasisPoints: 1_200, grade: "B" },
+      { maxContaminationBasisPoints: 1_800, grade: "C" },
+    ],
+  },
+  {
+    id: "plastic-sort-pelletize",
+    kind: "recycling",
+    material: "plastic",
+    title: "NIR Sort & Pelletize",
+    shortLabel: "Recycle plastic",
+    description:
+      "Near-infrared sensors sort resins before washing, density separation, extrusion and chopping into reusable plastic pellets.",
+    durationMs: 14_000,
+    costCentsPerKg: 11,
+    co2MilliKgPerKg: 180,
+    recoveryRateBasisPoints: 7_800,
+    gradeThresholds: [
+      { maxContaminationBasisPoints: 500, grade: "A" },
+      { maxContaminationBasisPoints: 1_500, grade: "B" },
+      { maxContaminationBasisPoints: 2_000, grade: "C" },
+    ],
+  },
+  {
+    id: "metal-eddy-remelt",
+    kind: "recycling",
+    material: "metal",
+    title: "Eddy Sort & Remelt",
+    shortLabel: "Recycle metal",
+    description:
+      "Magnetic and eddy-current separators recover metal before shredding, furnace remelting and casting into clean feedstock.",
+    durationMs: 10_000,
+    costCentsPerKg: 10,
+    co2MilliKgPerKg: 160,
+    recoveryRateBasisPoints: 9_300,
+    gradeThresholds: [
+      { maxContaminationBasisPoints: 800, grade: "A" },
+      { maxContaminationBasisPoints: 2_000, grade: "B" },
+      { maxContaminationBasisPoints: 2_500, grade: "C" },
+    ],
+  },
+  {
+    id: "glass-cullet-remelt",
+    kind: "recycling",
+    material: "glass",
+    title: "Cullet Sort & Remelt",
+    shortLabel: "Recycle glass",
+    description:
+      "Glass is optically color-sorted, air-cleaned, crushed into cullet and remelted into new containers.",
+    durationMs: 11_000,
+    costCentsPerKg: 9,
+    co2MilliKgPerKg: 120,
+    recoveryRateBasisPoints: 9_000,
+    gradeThresholds: [
+      { maxContaminationBasisPoints: 300, grade: "A" },
+      { maxContaminationBasisPoints: 1_000, grade: "B" },
+      { maxContaminationBasisPoints: 1_500, grade: "C" },
+    ],
+  },
+  {
+    id: "wood-chip-board",
+    kind: "recycling",
+    material: "wood",
+    title: "De-nail, Chip & Board",
+    shortLabel: "Recycle wood",
+    description:
+      "Clean wood is magnetically de-nailed, chipped, air-classified and pressed with resin into engineered board feedstock.",
+    durationMs: 9_000,
+    costCentsPerKg: 7,
+    co2MilliKgPerKg: 80,
+    recoveryRateBasisPoints: 8_000,
+    gradeThresholds: [
+      { maxContaminationBasisPoints: 500, grade: "A" },
+      { maxContaminationBasisPoints: 1_500, grade: "B" },
+      { maxContaminationBasisPoints: 2_000, grade: "C" },
+    ],
+  },
+  {
+    id: "landfill",
+    kind: "disposal",
+    title: "Engineered Landfill",
+    shortLabel: "Landfill",
+    description:
+      "Fast and inexpensive disposal, but it returns no material and creates the highest long-term carbon burden.",
+    durationMs: 4_000,
+    costCentsPerKg: 3,
+    co2MilliKgPerKg: 2_500,
+    recoveryRateBasisPoints: 0,
+    healthPenaltyOffset: 0,
+  },
+  {
+    id: "incineration",
+    kind: "disposal",
+    title: "Waste-to-Energy",
+    shortLabel: "Incinerate",
+    description:
+      "Controlled combustion recovers energy and emits less net carbon than landfill, but air pollution and ash cause a stronger health penalty.",
+    durationMs: 6_000,
+    costCentsPerKg: 5,
+    co2MilliKgPerKg: 1_800,
+    recoveryRateBasisPoints: 0,
+    healthPenaltyOffset: -1,
+  },
+];
+
+export const PROCESSING_METHOD_BY_ID = Object.fromEntries(
+  PROCESSING_METHODS.map((method) => [method.id, method]),
+) as Record<ProcessingMethodId, ProcessingMethodDefinition>;
+
 export const EMPTY_MATERIALS: MaterialMap = {
   paper: 0,
   plastic: 0,
@@ -318,7 +463,7 @@ export const HEALTH_MISSIONS: HealthMissionTemplate[] = [
     questions: {
       municipality:
         "A mixed batch will expire in 20s. What should Municipality do first?",
-      mrf: "A medium-contamination batch just arrived. Which processing mode is best by default?",
+      mrf: "A medium-contamination batch just arrived. What should MRF do first?",
       broker: "Team is short 2t metal for an active listing. What is the best broker move?",
     },
     options: {
@@ -344,8 +489,8 @@ export const HEALTH_MISSIONS: HealthMissionTemplate[] = [
       ],
       mrf: [
         {
-          key: "balanced-first-pass",
-          label: "Run balanced mode",
+          key: "choose-compatible-recovery",
+          label: "Choose a compatible recycling method",
           appropriate: true,
           highImpact: true,
         },
@@ -356,8 +501,8 @@ export const HEALTH_MISSIONS: HealthMissionTemplate[] = [
           highImpact: false,
         },
         {
-          key: "hold-forever",
-          label: "Hold without review",
+          key: "incinerate-without-review",
+          label: "Incinerate without review",
           appropriate: false,
           highImpact: false,
         },
@@ -417,14 +562,14 @@ export const HEALTH_MISSIONS: HealthMissionTemplate[] = [
       ],
       mrf: [
         {
-          key: "quality-mode-then-grade",
-          label: "Use quality mode then grade",
+          key: "match-method-to-contamination",
+          label: "Match method to contamination",
           appropriate: true,
           highImpact: true,
         },
         {
-          key: "rapid-no-check",
-          label: "Rapid mode no checks",
+          key: "recycle-without-screening",
+          label: "Recycle without screening",
           appropriate: false,
           highImpact: false,
         },
@@ -490,8 +635,8 @@ export const HEALTH_MISSIONS: HealthMissionTemplate[] = [
       ],
       mrf: [
         {
-          key: "balanced-or-quality-fit",
-          label: "Balanced or quality mode",
+          key: "choose-lower-carbon-recovery",
+          label: "Choose compatible low-carbon recovery",
           appropriate: true,
           highImpact: true,
         },
@@ -502,8 +647,8 @@ export const HEALTH_MISSIONS: HealthMissionTemplate[] = [
           highImpact: false,
         },
         {
-          key: "hold-all-batches",
-          label: "Hold every batch",
+          key: "incinerate-every-batch",
+          label: "Incinerate every batch",
           appropriate: false,
           highImpact: false,
         },
@@ -562,8 +707,8 @@ export const HEALTH_MISSIONS: HealthMissionTemplate[] = [
       ],
       mrf: [
         {
-          key: "process-urgent-then-balanced",
-          label: "Process urgent then balanced",
+          key: "process-urgent-compatible-stream",
+          label: "Process urgent compatible stream",
           appropriate: true,
           highImpact: true,
         },
@@ -862,8 +1007,8 @@ export const HEALTH_MISSIONS: HealthMissionTemplate[] = [
           highImpact: false,
         },
         {
-          key: "hold-instead-of-process",
-          label: "Hold instead of process",
+          key: "dispose-without-recovery",
+          label: "Dispose without recovery",
           appropriate: false,
           highImpact: false,
         },

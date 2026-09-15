@@ -4,13 +4,15 @@ import type {
   Inventory,
   Material,
   MaterialMap,
-  ProcessingMode,
+  ProcessingMethodId,
   Role,
+  RoleInventories,
   Route,
 } from "@circular-city/contracts";
 import {
   EMPTY_MATERIALS,
   MATERIALS,
+  PROCESSING_METHOD_BY_ID,
   STANDARD_SCENARIO,
   type HealthMissionTemplate,
   type ProjectTemplate,
@@ -38,6 +40,11 @@ export const emptyInventory = (): Inventory => ({
 });
 export const copyInventory = (inventory: Inventory): Inventory =>
   structuredClone(inventory);
+export const emptyRoleInventories = (): RoleInventories => ({
+  municipality: emptyInventory(),
+  mrf: emptyInventory(),
+  broker: emptyInventory(),
+});
 
 export interface TeamMetrics {
   collectedKg: number;
@@ -56,9 +63,11 @@ export interface TeamState {
   lockedCashCents: number;
   reservedCashCents: number;
   health: number;
+  healthRecoveryUntil: number | null;
   totalCO2Kg: number;
   revision: number;
   inventory: Inventory;
+  roleInventories: RoleInventories;
   provenance: { recoveredKg: number; tradedKg: number; externalKg: number };
   metrics: TeamMetrics;
   lastProjectClaimedAt: number | null;
@@ -82,9 +91,12 @@ export interface WasteBatch {
   holdExpiresAt?: number;
 }
 export interface ProcessResult {
+  methodId: ProcessingMethodId;
+  targetMaterial?: Material;
   outputKg: MaterialMap;
   residueKg: number;
-  grade: Grade;
+  grade: Grade | null;
+  durationMs: number;
   processingCostCents: number;
   processingCO2Kg: number;
   residueCostCents: number;
@@ -128,6 +140,8 @@ export interface TradeTerms {
 }
 
 const gradeRank: Record<Grade, number> = { A: 3, B: 2, C: 1 };
+export const HEALTH_RECOVERY_LOCKOUT_MS = 30_000;
+export const HEALTH_RECOVERY_HEALTH = 20;
 export const healthStatus = (health: number): TeamState["status"] =>
   health >= 35
     ? "active"
@@ -136,8 +150,46 @@ export const healthStatus = (health: number): TeamState["status"] =>
       : health >= 10
         ? "critical"
         : "emergency";
+export interface HealthChange {
+  health: number;
+  status: TeamState["status"];
+  healthRecoveryUntil: number | null;
+}
+export function applyTeamHealthDelta(
+  state: Pick<TeamState, "health" | "healthRecoveryUntil">,
+  delta: number,
+  at: number,
+): HealthChange {
+  const activeRecovery =
+    typeof state.healthRecoveryUntil === "number" &&
+    state.healthRecoveryUntil > at;
+  if (activeRecovery)
+    return {
+      health: 0,
+      status: "emergency",
+      healthRecoveryUntil: state.healthRecoveryUntil,
+    };
+
+  const health = clamp(state.health + delta, 0, 100);
+  return {
+    health,
+    status: healthStatus(health),
+    healthRecoveryUntil:
+      health === 0 ? at + HEALTH_RECOVERY_LOCKOUT_MS : null,
+  };
+}
+export function isTeamHealthRecoveryActive(
+  state: Pick<TeamState, "health" | "healthRecoveryUntil">,
+  at: number,
+): boolean {
+  return (
+    state.health <= 0 ||
+    (typeof state.healthRecoveryUntil === "number" &&
+      state.healthRecoveryUntil > at)
+  );
+}
 export const healthPenaltyForLandfill = (kg: number): number =>
-  kg < 2000 ? -1 : kg < 4000 ? -2 : kg < 6000 ? -3 : -4;
+  kg <= 0 ? 0 : kg < 2000 ? -1 : kg < 4000 ? -2 : kg < 6000 ? -3 : -4;
 export const availableMaterialKg = (
   inventory: Inventory,
   material: Material,
@@ -270,78 +322,68 @@ export function calculateCollection(
 
 export function calculateProcessing(
   batch: WasteBatch,
-  mode: Exclude<ProcessingMode, "hold">,
+  methodId: ProcessingMethodId,
 ): ProcessResult {
-  if (mode === "landfill")
+  const method = PROCESSING_METHOD_BY_ID[methodId];
+  if (!method) throw new RuleError("PROCESSING_METHOD_INCOMPATIBLE");
+  const processingCostCents = batch.massKg * method.costCentsPerKg;
+  const processingCO2Kg = roundHalfUp(
+    batch.massKg * method.co2MilliKgPerKg,
+    1000,
+  );
+
+  if (method.kind === "disposal") {
+    const healthDelta =
+      healthPenaltyForLandfill(batch.massKg) + (method.healthPenaltyOffset ?? 0);
     return {
+      methodId,
       outputKg: { ...EMPTY_MATERIALS },
       residueKg: batch.massKg,
-      grade: "C",
-      processingCostCents: roundHalfUp(batch.massKg * 5, 1),
-      processingCO2Kg: roundHalfUp(batch.massKg * 2500, 1000),
+      grade: null,
+      durationMs: method.durationMs,
+      processingCostCents,
+      processingCO2Kg,
       residueCostCents: 0,
       residueCO2Kg: 0,
-      healthDelta: healthPenaltyForLandfill(batch.massKg),
+      healthDelta,
     };
-  const config: Record<
-    Exclude<ProcessingMode, "hold" | "landfill">,
-    {
-      costCentsNumerator: number;
-      costCentsDenominator: number;
-      co2MilliKgPerKg: number;
-      yieldBps: number;
-      grade: Grade;
-    }
-  > = {
-    rapid: {
-      costCentsNumerator: 65,
-      costCentsDenominator: 10,
-      co2MilliKgPerKg: 180,
-      yieldBps: 8500,
-      grade: batch.contaminationBasisPoints <= 1000 ? "B" : "C",
-    },
-    balanced: {
-      costCentsNumerator: 5,
-      costCentsDenominator: 1,
-      co2MilliKgPerKg: 120,
-      yieldBps: 10000,
-      grade: batch.contaminationBasisPoints <= 1500 ? "B" : "C",
-    },
-    quality: {
-      costCentsNumerator: 7,
-      costCentsDenominator: 1,
-      co2MilliKgPerKg: 100,
-      yieldBps: 10700,
-      grade: batch.contaminationBasisPoints <= 1200 ? "A" : "B",
-    },
-  };
-  const selected = config[mode];
-  const output = { ...EMPTY_MATERIALS };
-  for (const material of materialKeys)
-    output[material] = Math.floor(
-      (batch.compositionKg[material] *
-        MATERIALS[material].baseRecoveryRateBasisPoints *
-        selected.yieldBps *
-        Math.max(5000, 10000 - batch.contaminationBasisPoints)) /
-        1_000_000_000_000,
-    );
-  const recoveredKg = materialKeys.reduce(
-    (sum, material) => sum + output[material],
+  }
+
+  const material = method.material;
+  const inputKg = material ? batch.compositionKg[material] : 0;
+  if (!material || inputKg <= 0)
+    throw new RuleError("PROCESSING_METHOD_INCOMPATIBLE");
+  const contaminationBasisPoints = clamp(
+    batch.contaminationBasisPoints,
     0,
+    10_000,
   );
+  const grade = method.gradeThresholds?.find(
+    (entry) => contaminationBasisPoints <= entry.maxContaminationBasisPoints,
+  )?.grade;
+  if (!grade) throw new RuleError("PROCESSING_METHOD_INCOMPATIBLE");
+
+  const output = { ...EMPTY_MATERIALS };
+  output[material] = Math.floor(
+    (inputKg *
+      method.recoveryRateBasisPoints *
+      (10_000 - contaminationBasisPoints)) /
+      100_000_000,
+  );
+  const recoveredKg = output[material];
   const residueKg = batch.massKg - recoveredKg;
   return {
+    methodId,
+    targetMaterial: material,
     outputKg: output,
     residueKg,
-    grade: selected.grade,
-    processingCostCents: roundHalfUp(
-      batch.massKg * selected.costCentsNumerator,
-      selected.costCentsDenominator,
-    ),
-    processingCO2Kg: roundHalfUp(batch.massKg * selected.co2MilliKgPerKg, 1000),
-    residueCostCents: roundHalfUp(residueKg * 5),
-    residueCO2Kg: roundHalfUp(residueKg * 2500, 1000),
-    healthDelta: healthPenaltyForLandfill(residueKg),
+    grade,
+    durationMs: method.durationMs,
+    processingCostCents,
+    processingCO2Kg,
+    residueCostCents: 0,
+    residueCO2Kg: 0,
+    healthDelta: 0,
   };
 }
 
@@ -408,7 +450,10 @@ export function assertClaimEligible(
   if (team.status === "withdrawn") throw new RuleError("TEAM_WITHDRAWN");
   if (team.health < 20) throw new RuleError("HEALTH_TOO_LOW_TO_CLAIM");
   if (now > expiresAt) throw new RuleError("PROJECT_NOT_ACTIVE");
-  consumeProjectMaterials(team.inventory, project.requirementsKg);
+  consumeProjectMaterials(
+    team.roleInventories.municipality,
+    project.requirementsKg,
+  );
 }
 
 export function applyProjectClaim(
@@ -423,6 +468,10 @@ export function applyProjectClaim(
   assertClaimEligible(team, project, now, expiresAt);
   const receipt = calculateCo2Receipt(team, teams, project.grossRevenueCents);
   const next = structuredClone(team);
+  next.roleInventories.municipality = consumeProjectMaterials(
+    next.roleInventories.municipality,
+    project.requirementsKg,
+  );
   next.inventory = consumeProjectMaterials(
     next.inventory,
     project.requirementsKg,
@@ -539,9 +588,11 @@ export const defaultTeam = (id: string, citySlot: number): TeamState => ({
   lockedCashCents: 0,
   reservedCashCents: 0,
   health: STANDARD_SCENARIO.startingHealth,
+  healthRecoveryUntil: null,
   totalCO2Kg: 0,
   revision: 0,
   inventory: emptyInventory(),
+  roleInventories: emptyRoleInventories(),
   provenance: { recoveredKg: 0, tradedKg: 0, externalKg: 0 },
   metrics: {
     collectedKg: 0,

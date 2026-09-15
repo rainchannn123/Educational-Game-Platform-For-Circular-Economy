@@ -3,8 +3,20 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { io, type Socket } from "socket.io-client";
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { Material, Role } from "@circular-city/contracts";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
+import type {
+  Grade,
+  Material,
+  ProcessingMethodId,
+  Role,
+  Route,
+} from "@circular-city/contracts";
 import { HEALTH_MISSIONS, MATERIALS } from "@circular-city/game-content";
 import { api, command, getToken } from "../lib/api";
 import type {
@@ -85,16 +97,34 @@ const formatCountdown = (target: number, current: number) => {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 };
 const materials: Material[] = ["paper", "plastic", "metal", "glass", "wood"];
+const grades: Grade[] = ["A", "B", "C"];
+const transferRoutes: Array<{
+  route: Route;
+  label: string;
+  detail: string;
+}> = [
+  { route: "express", label: "Express", detail: "6s · $0.07/kg · 0.36 CO2/kg" },
+  { route: "standard", label: "Standard", detail: "10s · $0.045/kg · 0.18 CO2/kg" },
+  {
+    route: "consolidated",
+    label: "Consolidated",
+    detail: "16s · $0.028/kg · 0.10 CO2/kg",
+  },
+];
 const realtimeEvents = [
   "project.announced",
   "project.previewed",
   "project.activated",
   "project.claimed",
   "project.expired",
+  "announcement.created",
   "team.metrics.updated",
+  "team.health.recovery.started",
+  "team.health.recovery.completed",
   "team.inventory.updated",
   "municipality.transport.updated",
   "mrf.processing.updated",
+  "material.transfer.updated",
   "project.readiness.updated",
   "trade.offer.updated",
   "trade.delivery.updated",
@@ -224,6 +254,16 @@ export function GameScreen({
       }
       if (eventName === "trade.delivery.updated" && payload.status === "completed") {
         enqueueTransferEffect("trade-delivery", { durationMs: 2800 });
+        return;
+      }
+      if (
+        eventName === "material.transfer.updated" &&
+        payload.status === "completed"
+      ) {
+        enqueueTransferEffect("processed-material", {
+          material: payload.material as Material,
+          durationMs: 2600,
+        });
         return;
       }
       if (eventName === "project.claimed") {
@@ -365,6 +405,21 @@ export function GameScreen({
       until: Date.now() + 5_000,
     });
   }, [clock, routeRole, snapshot.data, snapshot.dataUpdatedAt]);
+  useEffect(() => {
+    const data = snapshot.data;
+    if (!data) return;
+    const serverNow =
+      data.game.serverTime + Math.max(0, Date.now() - snapshot.dataUpdatedAt);
+    const recovering =
+      data.team.health <= 0 ||
+      (typeof data.team.healthRecoveryUntil === "number" &&
+        data.team.healthRecoveryUntil > serverNow);
+    if (!recovering) return;
+    const poll = window.setInterval(() => {
+      void queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
+    }, 1_000);
+    return () => window.clearInterval(poll);
+  }, [gameId, queryClient, snapshot.data, snapshot.dataUpdatedAt]);
   if (snapshot.isLoading)
     return (
       <main className="page">
@@ -407,6 +462,12 @@ export function GameScreen({
   const team = data.team;
   const displayServerTime =
     data.game.serverTime + Math.max(0, clock - snapshot.dataUpdatedAt);
+  const recoveryRemaining = team.healthRecoveryUntil
+    ? Math.max(0, team.healthRecoveryUntil - displayServerTime)
+    : 0;
+  const teamHealthRecovering =
+    team.health <= 0 ||
+    (typeof team.healthRecoveryUntil === "number" && recoveryRemaining > 0);
   const rewardMultiplierBasisPoints = team.rewardMultiplierBasisPoints ?? 10_000;
   const freshDelta = (delta: DeltaValue | null | undefined) =>
     delta && clock - delta.at <= 6000 ? delta : null;
@@ -456,6 +517,17 @@ export function GameScreen({
           if (authoritativeSnapshot.game.status === "completed") {
             setNotice(
               "This match has finished. Open the results screen for the debrief.",
+            );
+            return false;
+          }
+          const recoveryUntil = authoritativeSnapshot.team.healthRecoveryUntil;
+          if (
+            authoritativeSnapshot.team.health <= 0 ||
+            (typeof recoveryUntil === "number" &&
+              recoveryUntil > authoritativeSnapshot.game.serverTime)
+          ) {
+            setNotice(
+              "City Health is recovering. Actions resume after the team recovery timer.",
             );
             return false;
           }
@@ -606,6 +678,26 @@ export function GameScreen({
         selectedFacility={selectedFacility}
         snapshot={data}
       />
+      {teamHealthRecovering && (
+        <section
+          aria-live="assertive"
+          aria-modal="true"
+          className={styles.healthRecoveryOverlay}
+          role="alertdialog"
+        >
+          <div className={styles.healthRecoveryPanel}>
+            <p>City Health Emergency</p>
+            <strong>
+              {formatCountdown(
+                team.healthRecoveryUntil ?? displayServerTime + 30_000,
+                displayServerTime,
+              )}
+            </strong>
+            <span>Team actions are paused while City Health recovers.</span>
+            <small>Recovery will restore your city to 20% health.</small>
+          </div>
+        </section>
+      )}
       <header className={styles.header}>
         <div className={styles.metrics}>
           <Metric
@@ -648,19 +740,26 @@ export function GameScreen({
           />
         </div>
         <div className={styles.matchStatus} aria-label="Match status">
+          <div className={styles.roleIdentity}>
             <img
-            className={styles.roleAvatar}
-            src={roleAvatar[routeRole]}
-            alt=""
-          />
-          <span className={styles.playerRole}>          
-            {roleLabel}</span>
-          <strong>
-            <img className={styles.timerIcon} src={asset("countdown")} alt="" />
-            {countdownTarget
-              ? formatCountdown(countdownTarget, displayServerTime)
-              : "--:--"}
-          </strong>
+              className={styles.roleAvatar}
+              src={roleAvatar[routeRole]}
+              alt=""
+            />
+            <div>
+              <span>Player role</span>
+              <strong className={styles.playerRole}>{roleLabel}</strong>
+            </div>
+          </div>
+          <div className={styles.matchClock}>
+            <span>Game time</span>
+            <strong>
+              <img className={styles.timerIcon} src={asset("countdown")} alt="" />
+              {countdownTarget
+                ? formatCountdown(countdownTarget, displayServerTime)
+                : "--:--"}
+            </strong>
+          </div>
         </div>
       </header>
       <section
@@ -747,6 +846,16 @@ export function GameScreen({
           ))}
         </div>
       </section>
+      <GameChatDock
+        announcements={data.announcements}
+        busy={commandBusy}
+        gameId={gameId}
+        globalMessages={data.globalChatMessages}
+        messages={data.chatMessages}
+        role={routeRole}
+        send={send}
+        viewerUserId={data.viewer.userId}
+      />
       <InventoryBelt deltas={inventoryDeltas} team={team} />
       <nav className={styles.actionLauncher} aria-label="Game action panels">
         <button
@@ -896,6 +1005,325 @@ export function GameScreen({
     </main>
   );
 }
+
+type GameChatTab = "announcements" | "team" | "global" | "ai";
+
+const gameChatTabs: Array<{
+  id: GameChatTab;
+  label: string;
+  shortLabel: string;
+}> = [
+  { id: "announcements", label: "Announcements", shortLabel: "ANN" },
+  { id: "team", label: "Team chat", shortLabel: "TEAM" },
+  { id: "global", label: "Global chat", shortLabel: "ALL" },
+  { id: "ai", label: "Chat with AI", shortLabel: "AI" },
+];
+
+function GameChatDock({
+  announcements,
+  busy,
+  gameId,
+  globalMessages,
+  messages,
+  role,
+  send,
+  viewerUserId,
+}: {
+  announcements: GameSnapshot["announcements"];
+  busy: boolean;
+  gameId: string;
+  globalMessages: GameSnapshot["globalChatMessages"];
+  messages: GameSnapshot["chatMessages"];
+  role: Role;
+  send: (path: string, payload: object, method?: string) => Promise<boolean>;
+  viewerUserId: string;
+}) {
+  const [activeTab, setActiveTab] = useState<GameChatTab>("announcements");
+  const active = gameChatTabs.find((tab) => tab.id === activeTab)!;
+  const isLive =
+    activeTab === "announcements" || activeTab === "team" || activeTab === "global";
+
+  return (
+    <aside className={styles.gameChatDock} aria-label="Game communications">
+      <header className={styles.gameChatHeader}>
+        <div>
+          <span>City Signal</span>
+          <h2>{active.label}</h2>
+        </div>
+        <i aria-label={isLive ? "Live channel" : "Preview UI"}>
+          {isLive ? "Live" : "Preview"}
+        </i>
+      </header>
+      <div className={styles.gameChatTabs} role="tablist" aria-label="Chat channels">
+        {gameChatTabs.map((tab) => (
+          <button
+            aria-controls={`game-chat-${tab.id}`}
+            aria-selected={activeTab === tab.id}
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            role="tab"
+            type="button"
+          >
+            <span>{tab.shortLabel}</span>
+          </button>
+        ))}
+      </div>
+      <div
+        className={styles.gameChatPanel}
+        id={`game-chat-${activeTab}`}
+        key={activeTab}
+        role="tabpanel"
+      >
+        {activeTab === "announcements" && (
+          <AnnouncementChannel announcements={announcements} />
+        )}
+        {activeTab === "team" && (
+          <TeamChannel
+            busy={busy}
+            gameId={gameId}
+            messages={messages}
+            role={role}
+            send={send}
+            viewerUserId={viewerUserId}
+          />
+        )}
+        {activeTab === "global" && (
+          <GlobalChannel
+            busy={busy}
+            gameId={gameId}
+            messages={globalMessages}
+            role={role}
+            send={send}
+            viewerUserId={viewerUserId}
+          />
+        )}
+        {activeTab === "ai" && <AiChannel />}
+      </div>
+    </aside>
+  );
+}
+
+function useFeedAutoScroll(itemCount: number) {
+  const feed = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    feed.current?.scrollTo({
+      top: feed.current.scrollHeight,
+      behavior: itemCount > 1 ? "smooth" : "auto",
+    });
+  }, [itemCount]);
+  return feed;
+}
+
+const formatChannelTime = (timestamp: number): string =>
+  new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(timestamp);
+
+/** Durable game-wide system feed. */
+function AnnouncementChannel({
+  announcements,
+}: {
+  announcements: GameSnapshot["announcements"];
+}) {
+  const feed = useFeedAutoScroll(announcements.length);
+  return (
+    <div className={styles.announcementChannel} ref={feed}>
+      {announcements.length === 0 ? (
+        <div className={styles.chatChannelPlaceholder} data-channel="announcements">
+          <span className={styles.chatChannelPulse} />
+          <strong>System feed online</strong>
+          <p>Time milestones and project winners will appear here.</p>
+          <small>Waiting for the first city signal</small>
+        </div>
+      ) : (
+        announcements.map((announcement) => (
+          <article
+            className={styles.announcementMessage}
+            data-type={announcement.type}
+            key={announcement._id}
+          >
+            <span>
+              {announcement.type === "project-win" ? "Project result" : "Time update"}
+            </span>
+            <p>{announcement.message}</p>
+            <time>{formatChannelTime(announcement.createdAtMs)}</time>
+          </article>
+        ))
+      )}
+    </div>
+  );
+}
+
+/** Authenticated, same-team player message feed. */
+function TeamChannel({
+  busy,
+  gameId,
+  messages,
+  role,
+  send,
+  viewerUserId,
+}: {
+  busy: boolean;
+  gameId: string;
+  messages: GameSnapshot["chatMessages"];
+  role: Role;
+  send: (path: string, payload: object, method?: string) => Promise<boolean>;
+  viewerUserId: string;
+}) {
+  const [draft, setDraft] = useState("");
+  const feed = useFeedAutoScroll(messages.length);
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const message = draft.trim();
+    if (!message || busy) return;
+    const accepted = await send(`/v1/games/${gameId}/chat/messages`, {
+      payload: { channel: "team", message },
+    });
+    if (accepted) setDraft("");
+  };
+
+  return (
+    <div className={styles.teamChatChannel}>
+      <div className={styles.teamChatFeed} ref={feed}>
+        {messages.length === 0 ? (
+          <div className={styles.chatChannelPlaceholder} data-channel="team">
+            <strong>Team channel ready</strong>
+            <p>Coordinate collection, recovery, and trading with your team.</p>
+          </div>
+        ) : (
+          messages.map((message) => {
+            const ownMessage = message.senderUserId === viewerUserId;
+            const senderRole =
+              message.senderRole === "mrf"
+                ? "MRF"
+                : message.senderRole[0]?.toUpperCase() +
+                  message.senderRole.slice(1);
+            return (
+              <article
+                className={styles.teamChatMessage}
+                data-own={ownMessage}
+                key={message._id}
+              >
+                <span>
+                  {ownMessage ? "You" : message.senderName ?? "Teammate"} · {senderRole}
+                </span>
+                <p>{message.content}</p>
+                <time>{formatChannelTime(message.createdAtMs)}</time>
+              </article>
+            );
+          })
+        )}
+      </div>
+      <form className={styles.teamChatComposer} onSubmit={submit}>
+        <input
+          aria-label="Message your team"
+          maxLength={500}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder={`Message your ${role} team`}
+          value={draft}
+        />
+        <button disabled={busy || !draft.trim()} type="submit">
+          Send
+        </button>
+      </form>
+    </div>
+  );
+}
+
+/** Authenticated game-wide player message feed. */
+function GlobalChannel({
+  busy,
+  gameId,
+  messages,
+  role,
+  send,
+  viewerUserId,
+}: {
+  busy: boolean;
+  gameId: string;
+  messages: GameSnapshot["globalChatMessages"];
+  role: Role;
+  send: (path: string, payload: object, method?: string) => Promise<boolean>;
+  viewerUserId: string;
+}) {
+  const [draft, setDraft] = useState("");
+  const feed = useFeedAutoScroll(messages.length);
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const message = draft.trim();
+    if (!message || busy) return;
+    const accepted = await send(`/v1/games/${gameId}/chat/messages`, {
+      payload: { channel: "global", message },
+    });
+    if (accepted) setDraft("");
+  };
+
+  return (
+    <div className={styles.teamChatChannel}>
+      <div className={styles.teamChatFeed} ref={feed}>
+        {messages.length === 0 ? (
+          <div className={styles.chatChannelPlaceholder} data-channel="global">
+            <strong>Global channel ready</strong>
+            <p>Share strategy and celebrate progress with every active city.</p>
+          </div>
+        ) : (
+          messages.map((message) => {
+            const ownMessage = message.senderUserId === viewerUserId;
+            const senderRole =
+              message.senderRole === "mrf"
+                ? "MRF"
+                : message.senderRole[0]?.toUpperCase() +
+                  message.senderRole.slice(1);
+            return (
+              <article
+                className={styles.teamChatMessage}
+                data-own={ownMessage}
+                key={message._id}
+              >
+                <span>
+                  {ownMessage ? "You" : message.senderName ?? "Player"} · {senderRole}
+                </span>
+                <p>{message.content}</p>
+                <time>{formatChannelTime(message.createdAtMs)}</time>
+              </article>
+            );
+          })
+        )}
+      </div>
+      <form className={styles.teamChatComposer} onSubmit={submit}>
+        <input
+          aria-label="Message all cities"
+          maxLength={500}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder={`Message all cities as ${role}`}
+          value={draft}
+        />
+        <button disabled={busy || !draft.trim()} type="submit">
+          Send
+        </button>
+      </form>
+    </div>
+  );
+}
+
+/** Future LLM conversation boundary. */
+function AiChannel() {
+  return (
+    <div className={styles.chatChannelPlaceholder} data-channel="ai">
+      <strong>AI advisor reserved</strong>
+      <p>
+        A future LLM advisor can answer gameplay questions without changing
+        authoritative city state.
+      </p>
+      <div className={styles.chatComposerPlaceholder}>
+        <span>AI conversation integration pending</span>
+        <button disabled type="button">Ask</button>
+      </div>
+    </div>
+  );
+}
+
 function Metric({
   label,
   value,
@@ -981,6 +1409,165 @@ function InventoryBelt({
   );
 }
 
+function RoleTabs({
+  tab,
+  onChange,
+  role,
+}: {
+  tab: "operations" | "inventory";
+  onChange: (tab: "operations" | "inventory") => void;
+  role: Role;
+}) {
+  return (
+    <div className={styles.workspaceTabs} role="tablist" aria-label={`${role} workspace`}>
+      {(["operations", "inventory"] as const).map((value) => (
+        <button
+          aria-selected={tab === value}
+          key={value}
+          onClick={() => onChange(value)}
+          role="tab"
+          type="button"
+        >
+          {value === "operations" ? "Operations" : "My inventory"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RoleInventoryPanel({
+  team,
+  role,
+  gameId,
+  send,
+  busy,
+  currentTime,
+}: {
+  team: GameSnapshot["team"];
+  role: Role;
+  gameId: string;
+  send: (path: string, payload: object, method?: string) => Promise<boolean>;
+  busy: boolean;
+  currentTime: number;
+}) {
+  const inventory = team.roleInventories?.[role] ?? team.inventory;
+  const destinations = (["municipality", "mrf", "broker"] as Role[]).filter(
+    (candidate) => candidate !== role,
+  );
+  const [material, setMaterial] = useState<Material>("paper");
+  const [grade, setGrade] = useState<Grade>("B");
+  const [quantityKg, setQuantityKg] = useState(100);
+  const [toRole, setToRole] = useState<Role>(destinations[0]!);
+  const [route, setRoute] = useState<Route>("standard");
+  const availableKg = Math.max(
+    0,
+    inventory[material][grade] -
+      (inventory[material][`locked${grade}` as "lockedA" | "lockedB" | "lockedC"] ??
+        0),
+  );
+  const validQuantity =
+    Number.isInteger(quantityKg) && quantityKg > 0 && quantityKg <= availableKg;
+  const transfers = team.materialTransfers ?? [];
+
+  return (
+    <section className={styles.roleInventoryPanel} role="tabpanel">
+      <div className={styles.roleInventoryGrid}>
+        {materials.map((item) => (
+          <article key={item}>
+            <strong>
+              <img src={materialAsset[item]} alt="" />
+              {item}
+            </strong>
+            <span>A {formatTons(inventory[item].A)}</span>
+            <span>B {formatTons(inventory[item].B)}</span>
+            <span>C {formatTons(inventory[item].C)}</span>
+          </article>
+        ))}
+      </div>
+
+      <div className={styles.transferComposer}>
+        <h3>Send material to a teammate</h3>
+        <label>
+          Material
+          <select value={material} onChange={(event) => setMaterial(event.target.value as Material)}>
+            {materials.map((item) => (
+              <option key={item} value={item}>{item}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Grade
+          <select value={grade} onChange={(event) => setGrade(event.target.value as Grade)}>
+            {grades.map((item) => (
+              <option key={item} value={item}>Grade {item}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Quantity kg
+          <input
+            max={Math.max(1, availableKg)}
+            min="1"
+            step="1"
+            type="number"
+            value={quantityKg}
+            onChange={(event) => setQuantityKg(Number(event.target.value))}
+          />
+        </label>
+        <label>
+          Destination
+          <select value={toRole} onChange={(event) => setToRole(event.target.value as Role)}>
+            {destinations.map((destination) => (
+              <option key={destination} value={destination}>{destination}</option>
+            ))}
+          </select>
+        </label>
+        <fieldset className={styles.routeChoices}>
+          <legend>Transport route</legend>
+          {transferRoutes.map((choice) => (
+            <label key={choice.route}>
+              <input
+                checked={route === choice.route}
+                name={`${role}-transfer-route`}
+                onChange={() => setRoute(choice.route)}
+                type="radio"
+              />
+              <strong>{choice.label}</strong>
+              <span>{choice.detail}</span>
+            </label>
+          ))}
+        </fieldset>
+        <p className="muted">Available: {formatTons(availableKg)} grade {grade} {material}</p>
+        <button
+          disabled={busy || !validQuantity}
+          onClick={() =>
+            void send(`/v1/games/${gameId}/material-transfers`, {
+              expectedTeamRevision: team.revision,
+              payload: { toRole, materialType: material, grade, quantityKg, route },
+            })
+          }
+          type="button"
+        >
+          Dispatch to {toRole}
+        </button>
+      </div>
+
+      {transfers.length > 0 && (
+        <div className={styles.transferList}>
+          <h3>Materials in transit</h3>
+          {transfers.map((transfer) => (
+            <p key={transfer._id}>
+              {transfer.fromRole} → {transfer.toRole}: {formatTons(transfer.quantityKg)}{" "}
+              grade {transfer.grade} {transfer.materialType} · {transfer.route} · ETA{" "}
+              {formatCountdown(transfer.arrivesAt, currentTime)}
+            </p>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function Municipality({
   team,
   gameId,
@@ -988,12 +1575,13 @@ function Municipality({
   busy,
   currentTime,
 }: {
-  team: any;
+  team: GameSnapshot["team"];
   gameId: string;
   send: (path: string, payload: object, method?: string) => Promise<boolean>;
   busy: boolean;
   currentTime: number;
 }) {
+  const [tab, setTab] = useState<"operations" | "inventory">("operations");
   const availableSources = team.wasteSources.filter(
     (source: any) => source.status === "available",
   );
@@ -1013,8 +1601,10 @@ function Municipality({
     ]),
   );
   return (
-    <>
-      <div className={styles.queue}>
+    <section className={styles.roleWorkspace}>
+      <RoleTabs onChange={setTab} role="municipality" tab={tab} />
+      {tab === "operations" ? (
+        <div className={styles.queue} role="tabpanel">
         {transitSources.map((source: any) => {
           const sourceTransport = transportBySourceId.get(String(source._id));
           return (
@@ -1112,8 +1702,18 @@ function Municipality({
         {availableSources.length === 0 && (
           <p className="muted">No collection opportunities available.</p>
         )}
-      </div>
-    </>
+        </div>
+      ) : (
+        <RoleInventoryPanel
+          busy={busy}
+          currentTime={currentTime}
+          gameId={gameId}
+          role="municipality"
+          send={send}
+          team={team}
+        />
+      )}
+    </section>
   );
 }
 function Mrf({
@@ -1123,20 +1723,23 @@ function Mrf({
   busy,
   currentTime,
 }: {
-  team: any;
+  team: GameSnapshot["team"];
   gameId: string;
   send: (path: string, payload: object, method?: string) => Promise<boolean>;
   busy: boolean;
   currentTime: number;
 }) {
+  const [tab, setTab] = useState<"operations" | "inventory">("operations");
   const guideBySource = team.mrfActionGuide ?? {};
   return (
-    <>
-      <div className={styles.queue}>
+    <section className={styles.roleWorkspace}>
+      <RoleTabs onChange={setTab} role="mrf" tab={tab} />
+      {tab === "operations" ? (
+        <div className={styles.queue} role="tabpanel">
         {team.wasteSources
           .filter((source: any) => ["at_mrf", "held"].includes(source.status))
           .map((source: any) => (
-            <article key={source._id}>
+            <article className={styles.mrfBatchCard} key={source._id}>
               <strong className={styles.batchTitle}>
                 <img src={asset("material-bale")} alt="" />
                 {formatTons(source.massKg)} MRF queue batch
@@ -1145,64 +1748,90 @@ function Mrf({
                 Contamination{" "}
                 {(source.contaminationBasisPoints / 100).toFixed(0)}%
               </span>
-              {source.status === "held" && source.holdExpiresAt && (
-                <span>
-                  Hold expires in {formatCountdown(source.holdExpiresAt, currentTime)}
-                </span>
-              )}
-              <div>
-                {["rapid", "balanced", "quality", "hold", "landfill"].map(
-                  (mode) => (
+              <span>
+                Mix: {materials
+                  .filter((material) => source.compositionKg?.[material] > 0)
+                  .map((material) => `${material} ${formatTons(source.compositionKg[material])}`)
+                  .join(" · ")}
+              </span>
+              <div className={styles.methodGrid}>
+                {(guideBySource[source._id] ?? []).map((guide) => (
+                  <article
+                    className={styles.methodCard}
+                    data-kind={guide.kind}
+                    key={guide.methodId}
+                    tabIndex={0}
+                  >
+                    <div className={styles.methodSummary}>
+                      <strong>{guide.shortLabel}</strong>
+                      <span>{Math.floor(guide.durationMs / 1000)}s</span>
+                      <span>{formatMoney(guide.totalCostCents)}</span>
+                      <span>+{formatTons(guide.totalCO2Kg)} CO2e</span>
+                    </div>
+                    <div className={styles.methodDetails}>
+                      <h4>{guide.title}</h4>
+                      <p>{guide.description}</p>
+                      <dl>
+                        <div><dt>Recovered</dt><dd>{formatTons(guide.recoveredKg)}</dd></div>
+                        <div><dt>Residue / loss</dt><dd>{formatTons(guide.residueKg)}</dd></div>
+                        <div><dt>Output</dt><dd>{guide.grade ? `Grade ${guide.grade}` : "None"}</dd></div>
+                        <div>
+                          <dt>Health</dt>
+                          <dd>
+                            {(guide.healthDelta ?? 0) >= 0 ? "+" : ""}
+                            {guide.healthDelta ?? 0}
+                          </dd>
+                        </div>
+                      </dl>
+                      {guide.targetMaterial && (
+                        <p>
+                          Material matrix: -{formatTons(source.compositionKg[guide.targetMaterial] ?? 0)}{" "}
+                          {guide.targetMaterial} input → +{formatTons(guide.outputKg[guide.targetMaterial])}{" "}
+                          grade {guide.grade ?? "-"} output
+                        </p>
+                      )}
+                    </div>
                     <button
-                      key={mode}
-                      disabled={busy}
+                      disabled={busy || !guide.eligible}
                       onClick={() =>
                         void send(`/v1/games/${gameId}/mrf/processes`, {
                           expectedTeamRevision: team.revision,
-                          payload: { wasteSourceId: source._id, mode },
+                          payload: {
+                            wasteSourceId: source._id,
+                            methodId: guide.methodId as ProcessingMethodId,
+                          },
                         })
                       }
                     >
-                      {mode === "rapid"
-                        ? "Rapid: 6s · lower yield"
-                        : mode === "balanced"
-                          ? "Balanced: 10s · reliable"
-                          : mode === "quality"
-                            ? "Quality: 14s · best grade"
-                            : mode === "hold"
-                              ? "Hold: preserve for 30s"
-                              : "Landfill: 4s · health risk"}
+                      {guide.eligible ? `Start ${guide.shortLabel}` : "Batch too contaminated"}
                     </button>
-                  ),
-                )}
-              </div>
-              <div className={styles.mrfGuide}>
-                <h4>Action impact preview</h4>
-                {(guideBySource[source._id] ?? []).map((guide: any) => (
-                  <p key={`${source._id}-${guide.mode}`}>
-                    <strong>{String(guide.mode).toUpperCase()}</strong> ·{" "}
-                    {Math.floor((guide.durationMs ?? 0) / 1000)}s · cost{" "}
-                    {formatMoney(guide.totalCostCents ?? 0)} · CO2{" "}
-                    {formatTons(guide.totalCO2Kg ?? 0)} · recover{" "}
-                    {formatTons(guide.recoveredKg ?? 0)} (
-                    {((guide.recoveryRateBasisPoints ?? 0) / 100).toFixed(1)}%)
-                    · residue {formatTons(guide.residueKg ?? 0)}
-                    {guide.grade ? ` · grade ${guide.grade}` : ""}
-                    {typeof guide.healthDelta === "number"
-                      ? ` · health ${guide.healthDelta >= 0 ? "+" : ""}${guide.healthDelta}`
-                      : ""}
-                  </p>
+                  </article>
                 ))}
               </div>
             </article>
           ))}
-        {team.activeJobs.map((job: any) => (
-          <p key={job._id}>
-            Processing completes in {formatCountdown(job.dueAt, currentTime)}.
-          </p>
-        ))}
-      </div>
-    </>
+          {team.activeJobs.map((job) => (
+            <p className={styles.processingStatus} key={job._id}>
+              {job.methodId.replaceAll("-", " ")} completes in{" "}
+              {formatCountdown(job.dueAt, currentTime)}.
+            </p>
+          ))}
+          {!team.activeJobs.length &&
+            !team.wasteSources.some((source) => ["at_mrf", "held"].includes(source.status)) && (
+              <p className="muted">No batches are waiting at the MRF.</p>
+            )}
+        </div>
+      ) : (
+        <RoleInventoryPanel
+          busy={busy}
+          currentTime={currentTime}
+          gameId={gameId}
+          role="mrf"
+          send={send}
+          team={team}
+        />
+      )}
+    </section>
   );
 }
 function Broker({
@@ -1214,7 +1843,7 @@ function Broker({
   busy,
   currentTime,
 }: {
-  team: any;
+  team: GameSnapshot["team"];
   gameId: string;
   teams: { teamId: string; citySlot: number; name?: string }[];
   trades: unknown[] | undefined;
@@ -1222,6 +1851,9 @@ function Broker({
   busy: boolean;
   currentTime: number;
 }) {
+  const [workspaceTab, setWorkspaceTab] = useState<"operations" | "inventory">(
+    "operations",
+  );
   const [tab, setTab] = useState<"trade" | "external">("trade");
   const [material, setMaterial] = useState<Material>("metal");
   const [quantity, setQuantity] = useState(1000);
@@ -1241,7 +1873,8 @@ function Broker({
   );
   const availableOfferKg = Math.max(
     0,
-    team.inventory[material].B - (team.inventory[material].lockedB ?? 0),
+    team.roleInventories.broker[material].B -
+      (team.roleInventories.broker[material].lockedB ?? 0),
   );
   const validQuantity =
     Number.isFinite(quantity) && quantity >= 100 && quantity % 100 === 0;
@@ -1252,7 +1885,10 @@ function Broker({
   );
 
   return (
-    <section className={styles.overlaySection}>
+    <section className={styles.roleWorkspace}>
+      <RoleTabs onChange={setWorkspaceTab} role="broker" tab={workspaceTab} />
+      {workspaceTab === "operations" ? (
+    <section className={styles.overlaySection} role="tabpanel">
       <div className={styles.brokerTabs} role="tablist" aria-label="Broker actions">
         <button
           aria-selected={tab === "trade"}
@@ -1497,6 +2133,17 @@ function Broker({
             })}
           </div>
         </section>
+      )}
+    </section>
+      ) : (
+        <RoleInventoryPanel
+          busy={busy}
+          currentTime={currentTime}
+          gameId={gameId}
+          role="broker"
+          send={send}
+          team={team}
+        />
       )}
     </section>
   );

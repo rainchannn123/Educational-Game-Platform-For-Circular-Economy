@@ -100,13 +100,11 @@
 }
 
 .matchStatus {
-  display: grid;
-  grid-template-columns: 2rem auto auto;
+  display: flex;
   align-items: center;
-  column-gap: 0.72rem;
-  min-width: 9.5rem;
-  padding: 0.3rem 0.5rem 0.26rem 0.75rem;
-  position: relative;
+  gap: 0.9rem;
+  min-width: 16.5rem;
+  padding: 0.3rem 0.8rem;
   color: var(--color-ink-strong);
   background: var(--role-soft);
   border: 1px solid
@@ -115,10 +113,34 @@
 }
 
 .matchStatus strong {
-  grid-row: 1;
-  grid-column: 3;
   font-variant-numeric: tabular-nums;
-  font-size: 1.15rem;
+}
+
+.roleIdentity,
+.matchClock {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.roleIdentity > div,
+.matchClock {
+  display: grid;
+  gap: 0.05rem;
+}
+
+.matchClock {
+  min-width: 5.2rem;
+  padding-left: 0.8rem;
+  border-left: 1px solid rgb(255 255 255 / 0.18);
+}
+
+.matchClock strong {
+  display: flex;
+  align-items: center;
+  color: #fff8df;
+  font-size: 1.05rem;
+  line-height: 1;
 }
 
 .timerIcon {
@@ -130,33 +152,26 @@
 }
 
 .roleAvatar {
-  grid-row: 1;
   width: 1.8rem;
   height: 1.8rem;
   object-fit: contain;
 }
 
-.matchStatus span {
+.roleIdentity span,
+.matchClock span {
   color: var(--color-muted);
-  font-size: 0.64rem;
+  font-size: 0.56rem;
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.matchStatus .playerRole {
+.playerRole {
   display: block;
-  grid-column: 1;
-  grid-row: 1;
-  align-self: center;
-  padding-right: 0.25rem;
   color: var(--role-accent);
-}
-
-.matchStatus span:not(.playerRole) {
-  position: absolute;
-  left: 3.5rem;
-  bottom: 0.2rem;
+  font-size: 0.82rem;
+  line-height: 1.1;
+  text-transform: capitalize;
 }
 
 .sectionHeader {
@@ -788,6 +803,60 @@
   background: linear-gradient(#8dcfd0, #bfe5cf 58%, #79ad75);
 }
 
+.healthRecoveryOverlay {
+  position: fixed;
+  z-index: 250;
+  inset: 0;
+  display: grid;
+  padding: 1.5rem;
+  background: rgb(6 22 27 / 0.84);
+  cursor: not-allowed;
+  place-items: center;
+  backdrop-filter: blur(10px) saturate(0.7);
+}
+
+.healthRecoveryPanel {
+  display: grid;
+  justify-items: center;
+  gap: 0.65rem;
+  width: min(33rem, 100%);
+  padding: clamp(1.5rem, 5vw, 3.5rem);
+  text-align: center;
+  color: #f4fbf6;
+  background: radial-gradient(circle at 50% 0%, rgb(255 203 124 / 0.18), transparent 52%), #123a33;
+  border: 1px solid rgb(255 232 168 / 0.62);
+  border-radius: 1.25rem;
+  box-shadow: 0 28px 70px rgb(0 0 0 / 0.45);
+}
+
+.healthRecoveryPanel p {
+  margin: 0;
+  color: #ffe0a0;
+  font-size: clamp(0.78rem, 1.8vw, 1rem);
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.healthRecoveryPanel strong {
+  color: #fff8df;
+  font-size: clamp(4rem, 15vw, 8rem);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.07em;
+  line-height: 0.9;
+  text-shadow: 0 0 24px rgb(255 209 111 / 0.32);
+}
+
+.healthRecoveryPanel span {
+  font-size: clamp(1rem, 2.7vw, 1.35rem);
+  font-weight: 800;
+}
+
+.healthRecoveryPanel small {
+  color: #bdd9ce;
+  font-size: clamp(0.78rem, 1.8vw, 0.95rem);
+}
+
 .gameShell .header {
   position: fixed;
   z-index: 90;
@@ -997,6 +1066,376 @@
   font-size: 0.72rem;
   background: #f6d678;
   border-color: #fff0b6;
+}
+
+.gameChatDock {
+  position: absolute;
+  z-index: 44;
+  top: clamp(15rem, 35vh, 18.5rem);
+  left: 0.85rem;
+  display: grid;
+  grid-template-columns: 3.1rem minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(21rem, calc(100vw - 2rem));
+  height: min(18rem, calc(100dvh - 23.5rem));
+  min-height: 12.5rem;
+  overflow: hidden;
+  color: #edf7f2;
+  background: rgb(12 42 45 / 0.9);
+  border: 1px solid rgb(224 255 241 / 0.3);
+  border-radius: 1rem;
+  box-shadow: 0 18px 42px rgb(8 34 34 / 0.28);
+  backdrop-filter: blur(16px);
+}
+
+.gameChatHeader {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 3.45rem;
+  padding: 0.62rem 0.75rem 0.56rem;
+  background: linear-gradient(120deg, rgb(159 243 204 / 0.14), transparent 56%);
+  border-bottom: 1px solid rgb(255 255 255 / 0.12);
+}
+
+.gameChatHeader div {
+  display: grid;
+  gap: 0.08rem;
+}
+
+.gameChatHeader span {
+  color: #9ee1ce;
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.gameChatHeader h2 {
+  margin: 0;
+  color: #fff7dd;
+  font-size: 1rem;
+}
+
+.gameChatHeader i {
+  padding: 0.22rem 0.38rem;
+  color: #d3e8df;
+  font-size: 0.58rem;
+  font-style: normal;
+  font-weight: 850;
+  letter-spacing: 0.06em;
+  background: rgb(255 255 255 / 0.1);
+  border: 1px solid rgb(255 255 255 / 0.13);
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+.gameChatTabs {
+  display: grid;
+  grid-auto-rows: 1fr;
+  gap: 0.28rem;
+  padding: 0.45rem 0.35rem;
+  background: rgb(0 0 0 / 0.13);
+  border-right: 1px solid rgb(255 255 255 / 0.1);
+}
+
+.gameChatTabs button {
+  position: relative;
+  display: grid;
+  min-height: 2.15rem;
+  padding: 0.2rem;
+  color: #bad7cc;
+  font-size: 0.53rem;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0.52rem;
+  place-items: center;
+}
+
+.gameChatTabs button::before {
+  position: absolute;
+  top: 0.28rem;
+  left: 0.27rem;
+  width: 0.28rem;
+  height: 0.28rem;
+  content: "";
+  background: #75d7b5;
+  border-radius: 50%;
+  opacity: 0;
+  transform: scale(0.4);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.gameChatTabs button[aria-selected="true"] {
+  color: #173c40;
+  background: #d8f2e6;
+  border-color: #f2fff8;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.14);
+}
+
+.gameChatTabs button[aria-selected="true"]::before {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.gameChatPanel {
+  min-width: 0;
+  padding: 0.7rem;
+  overflow: auto;
+  animation: chat-panel-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.chatChannelPlaceholder {
+  display: grid;
+  align-content: center;
+  gap: 0.62rem;
+  min-height: 100%;
+  color: #d8e9e2;
+}
+
+.chatChannelPlaceholder strong {
+  color: #fff5d3;
+  font-size: 0.9rem;
+}
+
+.chatChannelPlaceholder p {
+  margin: 0;
+  color: #bdd4ca;
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.chatChannelPlaceholder small {
+  color: #91cbb8;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+}
+
+.chatChannelPulse {
+  width: 0.72rem;
+  height: 0.72rem;
+  background: #89e3ba;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0 rgb(137 227 186 / 0.5);
+  animation: chat-signal 1.8s ease-out infinite;
+}
+
+.chatChannelPlaceholder[data-channel="team"] .chatChannelPulse,
+.chatChannelPlaceholder[data-channel="global"] .chatChannelPulse,
+.chatChannelPlaceholder[data-channel="ai"] .chatChannelPulse {
+  background: #8cd2ff;
+}
+
+.chatComposerPlaceholder {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.42rem;
+  color: #92aaa2;
+  font-size: 0.65rem;
+  background: rgb(255 255 255 / 0.06);
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 0.62rem;
+}
+
+.chatComposerPlaceholder span {
+  flex: 1;
+}
+
+.chatComposerPlaceholder button {
+  padding: 0.3rem 0.42rem;
+  color: #728982;
+  font-size: 0.62rem;
+  font-weight: 800;
+  background: rgb(255 255 255 / 0.1);
+  border: 1px solid rgb(255 255 255 / 0.13);
+  border-radius: 0.42rem;
+}
+
+.announcementChannel,
+.teamChatChannel {
+  min-height: 100%;
+}
+
+.announcementChannel,
+.teamChatFeed {
+  display: flex;
+  flex-direction: column;
+  gap: 0.48rem;
+  height: 100%;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  scrollbar-color: rgb(159 229 194 / 0.56) transparent;
+}
+
+.announcementMessage {
+  position: relative;
+  padding: 0.58rem 0.62rem 0.52rem;
+  color: #e7f5ed;
+  background: linear-gradient(135deg, rgb(110 191 151 / 0.18), rgb(255 255 255 / 0.06));
+  border: 1px solid rgb(145 228 183 / 0.28);
+  border-radius: 0.68rem;
+  animation: chat-message-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.announcementMessage[data-type="project-win"] {
+  background: linear-gradient(135deg, rgb(247 202 103 / 0.24), rgb(227 144 65 / 0.12));
+  border-color: rgb(255 222 139 / 0.45);
+}
+
+.announcementMessage > span {
+  display: block;
+  margin-bottom: 0.18rem;
+  color: #a8dfc7;
+  font-size: 0.59rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.announcementMessage[data-type="project-win"] > span {
+  color: #ffe29a;
+}
+
+.announcementMessage p {
+  margin: 0;
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.announcementMessage time,
+.teamChatMessage time {
+  display: block;
+  margin-top: 0.24rem;
+  color: #a9c8bd;
+  font-size: 0.56rem;
+  text-align: right;
+}
+
+.teamChatChannel {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+}
+
+.teamChatFeed {
+  padding-right: 0.1rem;
+}
+
+.teamChatMessage {
+  align-self: flex-start;
+  max-width: 86%;
+  padding: 0.48rem 0.56rem 0.4rem;
+  color: #e9f6f0;
+  background: rgb(255 255 255 / 0.09);
+  border: 1px solid rgb(255 255 255 / 0.14);
+  border-radius: 0.7rem 0.7rem 0.7rem 0.18rem;
+  animation: chat-message-in 190ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.teamChatMessage[data-own="true"] {
+  align-self: flex-end;
+  color: #173c40;
+  background: #d9f3e5;
+  border-color: #f3fff8;
+  border-radius: 0.7rem 0.7rem 0.18rem 0.7rem;
+}
+
+.teamChatMessage > span {
+  display: block;
+  margin-bottom: 0.14rem;
+  color: #a7d9c5;
+  font-size: 0.57rem;
+  font-weight: 900;
+  letter-spacing: 0.035em;
+}
+
+.teamChatMessage[data-own="true"] > span {
+  color: #26745f;
+}
+
+.teamChatMessage p {
+  margin: 0;
+  font-size: 0.73rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.teamChatMessage[data-own="true"] time {
+  color: #43806d;
+}
+
+.teamChatComposer {
+  display: flex;
+  gap: 0.35rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid rgb(255 255 255 / 0.12);
+}
+
+.teamChatComposer input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.42rem 0.5rem;
+  color: #edf8f2;
+  font-size: 0.68rem;
+  background: rgb(0 0 0 / 0.16);
+  border: 1px solid rgb(255 255 255 / 0.2);
+  border-radius: 0.48rem;
+}
+
+.teamChatComposer input::placeholder {
+  color: #91aaa0;
+}
+
+.teamChatComposer button {
+  padding: 0.4rem 0.52rem;
+  color: #173c40;
+  font-size: 0.66rem;
+  font-weight: 900;
+  background: #fff0af;
+  border: 1px solid #fff5d1;
+  border-radius: 0.48rem;
+}
+
+.teamChatComposer button:disabled {
+  color: #7c9690;
+  background: #49635f;
+  border-color: #58736d;
+}
+
+@keyframes chat-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(0.45rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes chat-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.35rem) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes chat-signal {
+  70% {
+    box-shadow: 0 0 0 0.58rem transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0.7rem transparent;
+  }
 }
 
 .inventoryBelt {
@@ -1298,6 +1737,256 @@
   border-color: #fff5d1;
 }
 
+.roleWorkspace {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.workspaceTabs {
+  display: inline-flex;
+  gap: 0.3rem;
+  width: max-content;
+  padding: 0.2rem;
+  background: rgb(255 255 255 / 0.07);
+  border: 1px solid rgb(255 255 255 / 0.16);
+  border-radius: 0.72rem;
+}
+
+.workspaceTabs button {
+  min-width: 6.8rem;
+  padding: 0.4rem 0.6rem;
+  color: #c5d9d3;
+  font-size: 0.75rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0.52rem;
+}
+
+.workspaceTabs button[aria-selected="true"] {
+  color: #173c40;
+  background: #d6f0e1;
+  border-color: #f1fff7;
+}
+
+.roleInventoryPanel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.roleInventoryGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.roleInventoryGrid article,
+.transferComposer,
+.transferList,
+.processingStatus {
+  padding: 0.65rem;
+  color: #e7f3ed;
+  background: rgb(255 255 255 / 0.07);
+  border: 1px solid rgb(255 255 255 / 0.15);
+  border-radius: 0.7rem;
+}
+
+.roleInventoryGrid article {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.25rem;
+}
+
+.roleInventoryGrid strong {
+  display: inline-flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: 0.35rem;
+  color: #fff4cf;
+  text-transform: capitalize;
+}
+
+.roleInventoryGrid img {
+  width: 1.05rem;
+  height: 1.05rem;
+  object-fit: contain;
+}
+
+.roleInventoryGrid span,
+.transferList p {
+  margin: 0;
+  color: #c4d8d2;
+  font-size: 0.73rem;
+}
+
+.transferComposer {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.transferComposer h3,
+.transferComposer .routeChoices,
+.transferComposer > p,
+.transferComposer > button,
+.transferList h3 {
+  grid-column: 1 / -1;
+}
+
+.transferComposer h3,
+.transferList h3 {
+  margin: 0;
+  color: #fff4cf;
+  font-size: 0.88rem;
+}
+
+.routeChoices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+  padding: 0.45rem;
+  margin: 0;
+  border: 1px solid rgb(255 255 255 / 0.16);
+  border-radius: 0.6rem;
+}
+
+.routeChoices legend {
+  padding: 0 0.25rem;
+  color: #c5d9d3;
+  font-size: 0.72rem;
+}
+
+.routeChoices label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.12rem 0.3rem;
+  padding: 0.38rem;
+  color: #c5d9d3;
+  background: rgb(255 255 255 / 0.05);
+  border-radius: 0.45rem;
+  cursor: pointer;
+}
+
+.routeChoices input {
+  grid-row: span 2;
+  margin: 0.12rem 0 0;
+  accent-color: #fff0af;
+}
+
+.routeChoices strong {
+  color: #fff4cf;
+  font-size: 0.74rem;
+}
+
+.routeChoices span {
+  font-size: 0.63rem;
+  line-height: 1.2;
+}
+
+.methodGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin-top: 0.45rem;
+}
+
+.methodCard {
+  display: grid;
+  gap: 0.42rem;
+  padding: 0.55rem;
+  color: #e9f4ee;
+  background: linear-gradient(145deg, rgb(69 123 105 / 0.32), rgb(14 44 47 / 0.48));
+  border: 1px solid rgb(138 229 190 / 0.28);
+  border-radius: 0.72rem;
+  outline: none;
+}
+
+.methodCard[data-kind="disposal"] {
+  background: linear-gradient(145deg, rgb(138 77 56 / 0.38), rgb(62 39 39 / 0.52));
+  border-color: rgb(255 183 133 / 0.3);
+}
+
+.methodCard:hover,
+.methodCard:focus-within,
+.methodCard:focus {
+  border-color: #fff0af;
+  box-shadow: 0 0 0 2px rgb(255 240 175 / 0.18);
+}
+
+.methodSummary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.25rem;
+}
+
+.methodSummary strong {
+  grid-column: 1 / -1;
+  color: #fff6d5;
+  font-size: 0.79rem;
+}
+
+.methodSummary span {
+  color: #c6ddd4;
+  font-size: 0.66rem;
+}
+
+.methodDetails {
+  display: none;
+  gap: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid rgb(255 255 255 / 0.16);
+}
+
+.methodCard:hover .methodDetails,
+.methodCard:focus-within .methodDetails,
+.methodCard:focus .methodDetails {
+  display: grid;
+}
+
+.methodDetails h4,
+.methodDetails p {
+  margin: 0;
+}
+
+.methodDetails h4 {
+  color: #fff0af;
+  font-size: 0.76rem;
+}
+
+.methodDetails p {
+  color: #d4e7df;
+  font-size: 0.69rem;
+  line-height: 1.3;
+}
+
+.methodDetails dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.28rem;
+  margin: 0;
+}
+
+.methodDetails dl div {
+  padding: 0.32rem;
+  background: rgb(0 0 0 / 0.13);
+  border-radius: 0.4rem;
+}
+
+.methodDetails dt {
+  color: #aaccc0;
+  font-size: 0.6rem;
+}
+
+.methodDetails dd {
+  margin: 0.1rem 0 0;
+  color: #fff7da;
+  font-size: 0.71rem;
+  font-weight: 800;
+}
+
+.methodCard button {
+  width: 100%;
+}
+
 .actionPopup label,
 .actionPopup .purchase label,
 .actionPopup .tradeBoard label {
@@ -1497,6 +2186,44 @@
     grid-auto-columns: minmax(13rem, 82vw);
   }
 
+  .gameChatDock {
+    top: 16rem;
+    left: 0.4rem;
+    width: min(18rem, calc(100vw - 0.8rem));
+    height: 9.25rem;
+    min-height: 0;
+  }
+
+  .gameChatHeader {
+    min-height: 2.65rem;
+    padding: 0.4rem 0.55rem;
+  }
+
+  .gameChatHeader h2 {
+    font-size: 0.82rem;
+  }
+
+  .gameChatTabs button {
+    min-height: 1.5rem;
+    font-size: 0.46rem;
+  }
+
+  .gameChatPanel {
+    padding: 0.48rem;
+  }
+
+  .chatChannelPlaceholder {
+    gap: 0.36rem;
+  }
+
+  .chatChannelPlaceholder strong {
+    font-size: 0.76rem;
+  }
+
+  .chatChannelPlaceholder p {
+    font-size: 0.64rem;
+  }
+
   .inventoryBelt {
     right: 0.4rem;
     bottom: 4.2rem;
@@ -1556,5 +2283,14 @@
   .actionPopup .tradeBoard > *,
   .actionPopup .purchase button {
     grid-column: auto;
+  }
+
+  .methodGrid,
+  .routeChoices {
+    grid-template-columns: 1fr;
+  }
+
+  .transferComposer {
+    grid-template-columns: 1fr;
   }
 }

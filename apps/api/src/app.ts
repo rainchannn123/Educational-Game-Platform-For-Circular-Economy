@@ -20,11 +20,16 @@ import {
   externalPurchaseSchema,
   healthStepSchema,
   materialPlanSchema,
+  materialTransferSchema,
   pingSchema,
   processWasteSchema,
   readinessSchema,
 } from "@circular-city/contracts";
-import { PROJECTS, STANDARD_SCENARIO } from "@circular-city/game-content";
+import {
+  PROCESSING_METHODS,
+  PROJECTS,
+  STANDARD_SCENARIO,
+} from "@circular-city/game-content";
 import {
   calculateCo2Multiplier,
   calculateProcessing,
@@ -38,9 +43,11 @@ import {
   ActivityEvent,
   ChatMessage,
   Game,
+  GameAnnouncement,
   GameResultTeam,
   GameProject,
   GameTeamState,
+  MaterialTransfer,
   OutboxEvent,
   ProjectWork,
   Room,
@@ -70,70 +77,62 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 const service = new GameService();
-const mrfDurationsMs = {
-  rapid: 6000,
-  balanced: 10_000,
-  quality: 14_000,
-  hold: 30_000,
-  landfill: 4000,
-} as const;
 const mrfGuideForSource = (source: any) => {
-  const modes = ["rapid", "balanced", "quality", "landfill"] as const;
-  const guidance: Array<{
-    mode: "rapid" | "balanced" | "quality" | "landfill" | "hold";
-    durationMs: number;
-    grade: "A" | "B" | "C" | null;
-    recoveredKg: number;
-    residueKg: number;
-    recoveryRateBasisPoints: number;
-    processingCostCents: number;
-    residueCostCents: number;
-    totalCostCents: number;
-    processingCO2Kg: number;
-    residueCO2Kg: number;
-    totalCO2Kg: number;
-    healthDelta: number;
-  }> = modes.map((mode) => {
-    const result = calculateProcessing(source, mode);
-    const recoveredKg = materialKeys.reduce(
-      (sum, material) => sum + result.outputKg[material],
-      0,
-    );
-    return {
-      mode,
-      durationMs: mrfDurationsMs[mode],
-      grade: result.grade,
-      recoveredKg,
-      residueKg: result.residueKg,
-      recoveryRateBasisPoints: Math.max(
+  return PROCESSING_METHODS.filter(
+    (method) =>
+      method.kind === "disposal" ||
+      (method.material && (source.compositionKg?.[method.material] ?? 0) > 0),
+  ).map((method) => {
+    try {
+      const result = calculateProcessing(source, method.id);
+      const recoveredKg = materialKeys.reduce(
+        (sum, material) => sum + result.outputKg[material],
         0,
-        Math.floor((recoveredKg * 10_000) / Math.max(1, source.massKg)),
-      ),
-      processingCostCents: result.processingCostCents,
-      residueCostCents: result.residueCostCents,
-      totalCostCents: result.processingCostCents + result.residueCostCents,
-      processingCO2Kg: result.processingCO2Kg,
-      residueCO2Kg: result.residueCO2Kg,
-      totalCO2Kg: result.processingCO2Kg + result.residueCO2Kg,
-      healthDelta: result.healthDelta,
-    };
+      );
+      return {
+        methodId: method.id,
+        kind: method.kind,
+        targetMaterial: method.material,
+        title: method.title,
+        shortLabel: method.shortLabel,
+        description: method.description,
+        eligible: true,
+        durationMs: result.durationMs,
+        grade: result.grade,
+        outputKg: result.outputKg,
+        recoveredKg,
+        residueKg: result.residueKg,
+        recoveryRateBasisPoints: Math.max(
+          0,
+          Math.floor((recoveredKg * 10_000) / Math.max(1, source.massKg)),
+        ),
+        totalCostCents: result.processingCostCents,
+        totalCO2Kg: result.processingCO2Kg,
+        healthDelta: result.healthDelta,
+      };
+    } catch {
+      return {
+        methodId: method.id,
+        kind: method.kind,
+        targetMaterial: method.material,
+        title: method.title,
+        shortLabel: method.shortLabel,
+        description: method.description,
+        eligible: false,
+        durationMs: method.durationMs,
+        grade: null,
+        outputKg: { paper: 0, plastic: 0, metal: 0, glass: 0, wood: 0 },
+        recoveredKg: 0,
+        residueKg: source.massKg,
+        recoveryRateBasisPoints: 0,
+        totalCostCents: source.massKg * method.costCentsPerKg,
+        totalCO2Kg: Math.round(
+          (source.massKg * method.co2MilliKgPerKg) / 1000,
+        ),
+        healthDelta: 0,
+      };
+    }
   });
-  guidance.push({
-    mode: "hold",
-    durationMs: mrfDurationsMs.hold,
-    grade: null,
-    recoveredKg: 0,
-    residueKg: source.massKg,
-    recoveryRateBasisPoints: 0,
-    processingCostCents: 0,
-    residueCostCents: 0,
-    totalCostCents: 0,
-    processingCO2Kg: 0,
-    residueCO2Kg: 0,
-    totalCO2Kg: 0,
-    healthDelta: 0,
-  });
-  return guidance;
 };
 
 const code = (): string =>
@@ -727,6 +726,7 @@ export const createApp = (env: Env = readEnv()): express.Express => {
       const membership = await service.member(
         request.params.gameId,
         request.principal!.userId,
+        true,
       );
       const game = await Game.findById(request.params.gameId).lean();
       const projects = await GameProject.find({ gameId: request.params.gameId })
@@ -743,8 +743,11 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         mission,
         trades,
         transports,
+        materialTransfers,
         leaderboard,
         chatMessages,
+        globalChatMessages,
+        announcements,
       ] = await Promise.all([
         mongoose
           .model("WasteSource")
@@ -787,6 +790,13 @@ export const createApp = (env: Env = readEnv()): express.Express => {
           teamId: membership.state.teamId,
           status: "in_transit",
         }).lean(),
+        MaterialTransfer.find({
+          gameId: request.params.gameId,
+          teamId: membership.state.teamId,
+          status: "in_transit",
+        })
+          .sort({ arrivesAt: 1 })
+          .lean(),
         GameTeamState.find({ gameId: request.params.gameId })
           .sort({ citySlot: 1 })
           .select("teamId citySlot status totalCO2Kg")
@@ -796,6 +806,17 @@ export const createApp = (env: Env = readEnv()): express.Express => {
           teamId: membership.state.teamId,
           channel: "team",
         })
+          .sort({ createdAtMs: -1 })
+          .limit(50)
+          .lean(),
+        ChatMessage.find({
+          gameId: request.params.gameId,
+          channel: "global",
+        })
+          .sort({ createdAtMs: -1 })
+          .limit(100)
+          .lean(),
+        GameAnnouncement.find({ gameId: request.params.gameId })
           .sort({ createdAtMs: -1 })
           .limit(50)
           .lean(),
@@ -860,6 +881,7 @@ export const createApp = (env: Env = readEnv()): express.Express => {
             wasteSources,
             activeJobs: jobs,
             transports,
+            materialTransfers,
             currentHealthMission: mission,
             mrfActionGuide: Object.fromEntries(
               wasteSources
@@ -880,6 +902,8 @@ export const createApp = (env: Env = readEnv()): express.Express => {
           teamProjectWork: work,
           trades,
           chatMessages: chatMessages.reverse(),
+          globalChatMessages: globalChatMessages.reverse(),
+          announcements: announcements.reverse(),
           publicLeaderboard: leaderboard.map((entry) => ({
             teamId: entry.teamId,
             citySlot: entry.citySlot,
@@ -938,7 +962,23 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         body.commandId,
         body.expectedTeamRevision,
         body.payload.wasteSourceId,
-        body.payload.mode,
+        body.payload.methodId,
+      ),
+    ),
+  );
+  app.post(
+    "/v1/games/:gameId/material-transfers",
+    command(materialTransferSchema, (body, request) =>
+      service.createMaterialTransfer(
+        String(request.params.gameId),
+        request.principal!.userId,
+        body.commandId,
+        body.expectedTeamRevision,
+        body.payload.toRole,
+        body.payload.materialType,
+        body.payload.grade,
+        body.payload.quantityKg,
+        body.payload.route,
       ),
     ),
   );
@@ -1045,7 +1085,10 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         gameId,
         request.principal!.userId,
       );
-      if (body.payload.channel !== "team") {
+      if (
+        body.payload.channel !== "team" &&
+        body.payload.channel !== "global"
+      ) {
         const tradeId = body.payload.channel.startsWith("trade:")
           ? body.payload.channel.slice(6)
           : "";
@@ -1071,6 +1114,10 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         teamId: membership.state.teamId,
         channel: body.payload.channel,
         senderUserId: request.principal!.userId,
+        senderName:
+          membership.team.members.find(
+            (member: any) => member.userId === request.principal!.userId,
+          )?.displayName ?? "Teammate",
         senderRole: membership.role,
         content: body.payload.message.replace(/[<>]/g, ""),
         createdAtMs: Date.now(),
@@ -1081,7 +1128,9 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         target:
           body.payload.channel === "team"
             ? `team:${gameId}:${membership.state.teamId}`
-            : `trade:${gameId}:${body.payload.channel.slice(6)}`,
+            : body.payload.channel === "global"
+              ? `game:${gameId}`
+              : `trade:${gameId}:${body.payload.channel.slice(6)}`,
         payload: chat.toObject(),
         createdAtMs: Date.now(),
       });
@@ -1180,7 +1229,11 @@ export const createApp = (env: Env = readEnv()): express.Express => {
   });
   app.get("/v1/games/:gameId/results", async (request, response) => {
     try {
-      await service.member(request.params.gameId, request.principal!.userId);
+      await service.member(
+        request.params.gameId,
+        request.principal!.userId,
+        true,
+      );
       const game = await Game.findById(request.params.gameId).lean();
       const results = await GameResultTeam.find({
         gameId: request.params.gameId,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { HEALTH_MISSIONS, PROJECTS } from "@circular-city/game-content";
 import {
   applyProjectClaim,
+  applyTeamHealthDelta,
   assertTradeLockable,
   calculateCo2Receipt,
   calculateCollection,
@@ -9,11 +10,28 @@ import {
   consumeProjectMaterials,
   defaultTeam,
   emptyInventory,
+  HEALTH_RECOVERY_HEALTH,
+  HEALTH_RECOVERY_LOCKOUT_MS,
   healthMissionDelta,
+  isTeamHealthRecoveryActive,
   validateTradeTerms,
 } from "../src/index.js";
 
 describe("deterministic game rules", () => {
+  it("starts and preserves a 30-second recovery lockout at zero health", () => {
+    const team = defaultTeam("a", 1);
+    team.health = 3;
+    const at = 100_000;
+    const locked = applyTeamHealthDelta(team, -4, at);
+    expect(locked).toEqual({
+      health: 0,
+      status: "emergency",
+      healthRecoveryUntil: at + HEALTH_RECOVERY_LOCKOUT_MS,
+    });
+    expect(isTeamHealthRecoveryActive(locked, at + 1)).toBe(true);
+    expect(applyTeamHealthDelta(locked, -2, at + 5_000)).toEqual(locked);
+    expect(HEALTH_RECOVERY_HEALTH).toBe(20);
+  });
   it("applies the 0.50x CO2 multiplier at twice room average", () => {
     const winner = defaultTeam("a", 1);
     winner.totalCO2Kg = 2000;
@@ -41,7 +59,7 @@ describe("deterministic game rules", () => {
     expect(receipt.multiplierBasisPoints).toBe(10_000);
     expect(receipt.netRevenueCents).toBe(100_000);
   });
-  it("floors recovered material and applies residue costs", () => {
+  it("recovers paper through hydropulping with contamination-adjusted yield", () => {
     const result = calculateProcessing(
       {
         id: "waste_1",
@@ -51,17 +69,43 @@ describe("deterministic game rules", () => {
         status: "at_mrf",
         expiresAt: 0,
       },
-      "balanced",
+      "paper-hydropulp-deink",
     );
     expect(result.outputKg.paper).toBe(807);
+    expect(result.grade).toBe("A");
     expect(result.residueKg).toBe(193);
-    expect(result.residueCO2Kg).toBe(483);
+    expect(result.processingCostCents).toBe(8_000);
+    expect(result.processingCO2Kg).toBe(120);
+  });
+  it("uses disposal without creating material and applies its health cost", () => {
+    const result = calculateProcessing(
+      {
+        id: "waste_2",
+        massKg: 2_000,
+        compositionKg: { paper: 0, plastic: 2_000, metal: 0, glass: 0, wood: 0 },
+        contaminationBasisPoints: 0,
+        status: "at_mrf",
+        expiresAt: 0,
+      },
+      "incineration",
+    );
+    expect(result.outputKg).toEqual({
+      paper: 0,
+      plastic: 0,
+      metal: 0,
+      glass: 0,
+      wood: 0,
+    });
+    expect(result.grade).toBeNull();
+    expect(result.healthDelta).toBe(-3);
   });
   it("consumes grade B before grade A during a successful claim", () => {
     const team = defaultTeam("a", 1);
     const project = PROJECTS[0]!;
     team.inventory.wood.B = 2000;
     team.inventory.paper.B = 1000;
+    team.roleInventories.municipality.wood.B = 2000;
+    team.roleInventories.municipality.paper.B = 1000;
     const result = applyProjectClaim(
       team,
       [team, defaultTeam("b", 2)],

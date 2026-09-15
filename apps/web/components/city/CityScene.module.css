@@ -69,6 +69,34 @@
   border-radius: 50%;
 }
 
+.avatarControls {
+  position: absolute;
+  z-index: 4;
+  bottom: 1rem;
+  left: 1rem;
+  display: grid;
+  gap: 0.12rem;
+  padding: 0.5rem 0.65rem;
+  color: #d4e9df;
+  background: rgb(13 39 43 / 0.78);
+  border: 1px solid rgb(255 255 255 / 0.28);
+  border-radius: 0.7rem;
+  box-shadow: 0 10px 24px rgb(10 41 40 / 0.2);
+  pointer-events: none;
+  backdrop-filter: blur(10px);
+}
+
+.avatarControls strong {
+  color: #fff1bf;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+}
+
+.avatarControls span {
+  color: #c6ded5;
+  font-size: 0.65rem;
+}
+
 .qualityControl {
   position: absolute;
   z-index: 5;
@@ -210,6 +238,11 @@
   .qualityControl {
     right: 0.75rem;
     bottom: 0.75rem;
+  }
+
+  .avatarControls {
+    bottom: 0.75rem;
+    left: 0.75rem;
   }
 
   .fallbackFacility {

@@ -45,3 +45,21 @@ export function dueScheduleSlots(
     (_, index) => lastProcessedSlot + index + 1,
   );
 }
+
+export const timeAnnouncementMilestones = [
+  { remainingMs: 15 * 60_000, message: "15 minutes remaining!" },
+  { remainingMs: 10 * 60_000, message: "10 minutes remaining!" },
+  { remainingMs: 5 * 60_000, message: "5 minutes left!" },
+  { remainingMs: 60_000, message: "Last 1 minute!" },
+] as const;
+
+export function dueTimeAnnouncements(
+  activeEndsAt: number,
+  current: number,
+): readonly (typeof timeAnnouncementMilestones)[number][] {
+  if (current >= activeEndsAt) return [];
+  const remainingMs = activeEndsAt - current;
+  return timeAnnouncementMilestones.filter(
+    (milestone) => remainingMs <= milestone.remainingMs,
+  );
+}

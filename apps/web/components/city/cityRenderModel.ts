@@ -63,6 +63,17 @@ export function buildCityRenderModel(snapshot: GameSnapshot): CityRenderModel {
       arrivesAt: job.dueAt,
     }),
   );
+  const materialTransits: CityTransit[] = snapshot.team.materialTransfers.map(
+    (transfer) => ({
+      id: transfer._id,
+      kind: "material-transfer",
+      material: transfer.materialType,
+      fromRole: transfer.fromRole,
+      toRole: transfer.toRole,
+      route: transfer.route,
+      arrivesAt: transfer.arrivesAt,
+    }),
+  );
 
   const toProject = (
     project: GameSnapshot["projects"]["active"][number],
@@ -107,7 +118,12 @@ export function buildCityRenderModel(snapshot: GameSnapshot): CityRenderModel {
       ).length,
       processing: snapshot.team.activeJobs.length,
     },
-    transits: [...collectionTransits, ...processingTransits, ...tradeTransits],
+    transits: [
+      ...collectionTransits,
+      ...processingTransits,
+      ...materialTransits,
+      ...tradeTransits,
+    ],
     projects,
     hasCityCareMission: snapshot.team.currentHealthMission !== null,
     activeTradeCount: snapshot.trades.filter((trade) =>

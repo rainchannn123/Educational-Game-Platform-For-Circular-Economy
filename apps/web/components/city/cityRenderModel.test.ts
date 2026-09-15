@@ -39,6 +39,15 @@ const snapshot: GameSnapshot = {
       paper: { ...emptyInventory.paper, A: 700, B: 1_300 },
       metal: { ...emptyInventory.metal, B: 2_000 },
     },
+    roleInventories: {
+      municipality: {
+        ...emptyInventory,
+        paper: { ...emptyInventory.paper, A: 700, B: 1_300 },
+        metal: { ...emptyInventory.metal, B: 2_000 },
+      },
+      mrf: { ...emptyInventory },
+      broker: { ...emptyInventory },
+    },
     wasteSources: [
       {
         _id: "waste_available",
@@ -88,9 +97,25 @@ const snapshot: GameSnapshot = {
       {
         _id: "process_1",
         wasteSourceId: "waste_queue",
-        mode: "balanced",
+        methodId: "paper-hydropulp-deink",
         dueAt: 11_000,
         status: "processing",
+      },
+    ],
+    materialTransfers: [
+      {
+        _id: "transfer_1",
+        fromRole: "mrf",
+        toRole: "municipality",
+        materialType: "paper",
+        grade: "B",
+        quantityKg: 750,
+        route: "consolidated",
+        costCents: 2_100,
+        co2Kg: 75,
+        departedAt: 2_000,
+        arrivesAt: 18_000,
+        status: "in_transit",
       },
     ],
     transports: [
@@ -163,6 +188,8 @@ const snapshot: GameSnapshot = {
     },
   ],
   chatMessages: [],
+  globalChatMessages: [],
+  announcements: [],
   publicLeaderboard: [],
 };
 
@@ -186,6 +213,13 @@ describe("buildCityRenderModel", () => {
         kind: "processing",
         route: "standard",
         arrivesAt: 11_000,
+      }),
+      expect.objectContaining({
+        id: "transfer_1",
+        kind: "material-transfer",
+        material: "paper",
+        route: "consolidated",
+        arrivesAt: 18_000,
       }),
       expect.objectContaining({
         id: "trade_1",

@@ -141,10 +141,12 @@ export const GameTeamState: any =
         lockedCashCents: { type: Number, default: 0 },
         reservedCashCents: { type: Number, default: 0 },
         health: Number,
+        healthRecoveryUntil: { type: Number, default: null },
         totalCO2Kg: Number,
         status: { type: String, default: "active" },
         revision: { type: Number, default: 0 },
         inventory,
+        roleInventories: { type: Schema.Types.Mixed, default: () => ({}) },
         provenance: Schema.Types.Mixed,
         metrics: Schema.Types.Mixed,
         lastProjectClaimedAt: Number,
@@ -197,12 +199,40 @@ export const ProcessJob: any =
         gameId: String,
         teamId: String,
         wasteSourceId: String,
-        mode: String,
+        methodId: String,
+        result: Schema.Types.Mixed,
         dueAt: Number,
         status: { type: String, default: "processing" },
       },
       timestamps,
     ).index({ status: 1, dueAt: 1 }),
+  );
+export const MaterialTransfer: any =
+  mongoose.models.MaterialTransfer ??
+  model(
+    "MaterialTransfer",
+    new Schema(
+      {
+        gameId: { type: String, required: true },
+        teamId: { type: String, required: true },
+        commandId: { type: String, required: true },
+        fromRole: { type: String, required: true },
+        toRole: { type: String, required: true },
+        materialType: { type: String, required: true },
+        grade: { type: String, required: true },
+        quantityKg: { type: Number, required: true },
+        route: { type: String, required: true },
+        costCents: { type: Number, required: true },
+        co2Kg: { type: Number, required: true },
+        departedAt: { type: Number, required: true },
+        arrivesAt: { type: Number, required: true },
+        status: { type: String, default: "in_transit" },
+        completedAt: Number,
+      },
+      timestamps,
+    )
+      .index({ status: 1, arrivesAt: 1 })
+      .index({ gameId: 1, teamId: 1, commandId: 1 }, { unique: true }),
   );
 export const GameProject: any =
   mongoose.models.GameProject ??
@@ -321,12 +351,31 @@ export const ChatMessage: any =
         teamId: String,
         channel: String,
         senderUserId: String,
+        senderName: String,
         senderRole: String,
         content: String,
         createdAtMs: Number,
       },
       timestamps,
     ).index({ gameId: 1, teamId: 1, channel: 1, createdAtMs: -1 }),
+  );
+export const GameAnnouncement: any =
+  mongoose.models.GameAnnouncement ??
+  model(
+    "GameAnnouncement",
+    new Schema(
+      {
+        gameId: { type: String, required: true },
+        key: { type: String, required: true },
+        type: { type: String, required: true },
+        message: { type: String, required: true },
+        payload: Schema.Types.Mixed,
+        createdAtMs: { type: Number, required: true },
+      },
+      timestamps,
+    )
+      .index({ gameId: 1, key: 1 }, { unique: true })
+      .index({ gameId: 1, createdAtMs: -1 }),
   );
 export const ActivityEvent: any =
   mongoose.models.ActivityEvent ??
