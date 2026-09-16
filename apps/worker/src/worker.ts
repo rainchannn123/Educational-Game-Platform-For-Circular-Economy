@@ -24,6 +24,7 @@ import {
   dueScheduleSlots,
   dueTimeAnnouncements,
   projectForSequence,
+  wasteSpawnIntervalMs,
 } from "./scheduler.js";
 import { readEnv } from "../../api/src/env.js";
 import { connectMongo } from "../../api/src/database.js";
@@ -78,20 +79,26 @@ const due = async (
   type: string,
   payload: Record<string, unknown>,
   target = `game:${gameId}`,
+  session?: mongoose.ClientSession,
 ): Promise<void> => {
   const game = await Game.findByIdAndUpdate(
     gameId,
     { $inc: { globalRevision: 1 } },
-    { new: true },
+    { new: true, session },
   ).lean();
-  await OutboxEvent.create({
-    gameId,
-    eventType: type,
-    target,
-    payload,
-    gameRevision: game?.globalRevision ?? 0,
-    createdAtMs: now(),
-  });
+  await OutboxEvent.create(
+    [
+      {
+        gameId,
+        eventType: type,
+        target,
+        payload,
+        gameRevision: game?.globalRevision ?? 0,
+        createdAtMs: now(),
+      },
+    ],
+    { session },
+  );
 };
 const activity = async (
   gameId: string,
@@ -201,19 +208,28 @@ async function ensureInitialProject(game: any): Promise<void> {
   await due(gameId, "project.announced", { project: projectPayload });
 }
 
-async function spawnWaste(game: any, tickIndex: number): Promise<void> {
-  const states = await GameTeamState.find({
+const nextWasteIntervalMs = (
+  game: any,
+  citySlot: number,
+  sequence: number,
+): number => {
+  const minimum = STANDARD_SCENARIO.wasteSpawnMinMs;
+  const maximum = STANDARD_SCENARIO.wasteSpawnMaxMs;
+  return wasteSpawnIntervalMs(game.seed ?? 0, citySlot, sequence, minimum, maximum);
+};
+
+async function spawnWaste(
+  game: any,
+  state: { teamId: string; citySlot: number },
+  sequence: number,
+): Promise<void> {
+  const visible = await WasteSource.countDocuments({
     gameId: String(game._id),
-    status: { $ne: "withdrawn" },
-  }).lean();
-  for (const state of states) {
-    const visible = await WasteSource.countDocuments({
-      gameId: String(game._id),
-      teamId: state.teamId,
-      status: "available",
-    });
-    if (visible >= STANDARD_SCENARIO.wasteVisibleCap) continue;
-    const templates = [
+    teamId: state.teamId,
+    status: "available",
+  });
+  if (visible >= STANDARD_SCENARIO.wasteVisibleCap) return;
+  const templates = [
       {
         mass: [4000, 5500],
         composition: {
@@ -280,43 +296,77 @@ async function spawnWaste(game: any, tickIndex: number): Promise<void> {
         },
         contamination: 1200,
       },
-    ];
-    const sourceTemplate =
-      templates[
-        seeded(game.seed, state.citySlot * 101 + tickIndex) %
-          templates.length
-      ]!;
-    const mass =
-      sourceTemplate.mass[0] +
-      (seeded(game.seed, state.citySlot * 211 + tickIndex) %
-        (sourceTemplate.mass[1] - sourceTemplate.mass[0] + 1));
-    const composition = materialMap();
-    let remainder = mass;
-    const nonZero = Object.entries(sourceTemplate.composition).filter(
-      ([, amount]) => amount > 0,
-    );
-    nonZero.forEach(([material, percent], index) => {
-      const amount =
-        index === nonZero.length - 1
-          ? remainder
-          : Math.floor((mass * percent) / 10000);
-      composition[material as keyof typeof composition] = amount;
-      remainder -= amount;
-    });
-    const source = await WasteSource.create({
-      gameId: String(game._id),
-      teamId: state.teamId,
-      massKg: mass,
-      compositionKg: composition,
-      contaminationBasisPoints: sourceTemplate.contamination,
-      status: "available",
-      expiresAt: now() + STANDARD_SCENARIO.wasteExpiryMs,
-    });
-    await due(
-      String(game._id),
-      "waste.spawned",
-      { wasteSource: source.toObject() },
-      `team:${game._id}:${state.teamId}`,
+  ];
+  const sourceTemplate =
+    templates[
+      seeded(game.seed ?? 0, state.citySlot * 101 + sequence) % templates.length
+    ]!;
+  const mass =
+    sourceTemplate.mass[0] +
+    (seeded(game.seed ?? 0, state.citySlot * 211 + sequence) %
+      (sourceTemplate.mass[1] - sourceTemplate.mass[0] + 1));
+  const composition = materialMap();
+  let remainder = mass;
+  const nonZero = Object.entries(sourceTemplate.composition).filter(
+    ([, amount]) => amount > 0,
+  );
+  nonZero.forEach(([material, percent], index) => {
+    const amount =
+      index === nonZero.length - 1
+        ? remainder
+        : Math.floor((mass * percent) / 10000);
+    composition[material as keyof typeof composition] = amount;
+    remainder -= amount;
+  });
+  const source = await WasteSource.create({
+    gameId: String(game._id),
+    teamId: state.teamId,
+    massKg: mass,
+    compositionKg: composition,
+    contaminationBasisPoints: sourceTemplate.contamination,
+    status: "available",
+    expiresAt: now() + STANDARD_SCENARIO.wasteExpiryMs,
+  });
+  await due(
+    String(game._id),
+    "waste.spawned",
+    { wasteSource: source.toObject() },
+    `team:${game._id}:${state.teamId}`,
+  );
+}
+
+async function scheduleWaste(game: any, current: number): Promise<void> {
+  const states = await GameTeamState.find({
+    gameId: String(game._id),
+    status: { $ne: "withdrawn" },
+  }).lean();
+  for (const state of states) {
+    const sequence = state.wasteSpawnSequence ?? 0;
+    const nextWasteAt =
+      state.nextWasteAt ??
+      current + nextWasteIntervalMs(game, state.citySlot, sequence);
+    if (state.nextWasteAt === undefined || state.nextWasteAt === null) {
+      await GameTeamState.updateOne(
+        {
+          _id: state._id,
+          $or: [{ nextWasteAt: { $exists: false } }, { nextWasteAt: null }],
+        },
+        { $set: { nextWasteAt, wasteSpawnSequence: sequence } },
+      );
+      continue;
+    }
+    if (nextWasteAt > current) continue;
+    await spawnWaste(game, state, sequence);
+    const nextSequence = sequence + 1;
+    await GameTeamState.updateOne(
+      { _id: state._id, nextWasteAt },
+      {
+        $set: {
+          nextWasteAt:
+            current + nextWasteIntervalMs(game, state.citySlot, nextSequence),
+          wasteSpawnSequence: nextSequence,
+        },
+      },
     );
   }
 }
@@ -571,20 +621,7 @@ async function advanceGame(game: any): Promise<void> {
       });
     }
   }
-  let lastWasteTick = game.lastWasteTick ?? -1;
-  for (const wasteTick of dueScheduleSlots(
-    lastWasteTick,
-    activeElapsed,
-    0,
-    STANDARD_SCENARIO.wasteRefreshMs,
-  )) {
-    await spawnWaste(game, wasteTick);
-    lastWasteTick = wasteTick;
-  }
-  if (game.lastWasteTick !== lastWasteTick) {
-    game.lastWasteTick = lastWasteTick;
-    await game.save();
-  }
+  await scheduleWaste(game, current);
 
   if (activeElapsed >= STANDARD_SCENARIO.firstHealthMissionMs) {
     let lastMissionSlot = game.lastHealthMissionSlot ?? -1;
@@ -705,41 +742,56 @@ async function settleDueEntities(): Promise<void> {
     status: "in_transit",
     arrivesAt: { $lte: current },
   })) {
-    const changed = await Transport.updateOne(
-      { _id: transport._id, status: "in_transit" },
-      { $set: { status: "arrived" } },
-    );
-    if (!changed.modifiedCount) continue;
-    await WasteSource.updateOne(
-      { _id: transport.wasteSourceId, status: "in_transit" },
-      {
-        $set: { status: "at_mrf", queueArrivedAt: current },
-        $unset: { transitArrivesAt: 1 },
-      },
-    );
-    await due(
-      transport.gameId,
-      "municipality.transport.updated",
-      { wasteSourceId: transport.wasteSourceId, status: "at_mrf" },
-      `team:${transport.gameId}:${transport.teamId}`,
-    );
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const transportChanged = await Transport.updateOne(
+          { _id: transport._id, status: "in_transit" },
+          { $set: { status: "arrived" } },
+          { session },
+        );
+        if (!transportChanged.modifiedCount) return;
+        const sourceChanged = await WasteSource.updateOne(
+          {
+            _id: transport.wasteSourceId,
+            teamId: transport.teamId,
+            status: "in_transit",
+          },
+          {
+            $set: { status: "at_mrf", queueArrivedAt: current },
+            $unset: { transitArrivesAt: 1 },
+          },
+          { session },
+        );
+        if (!sourceChanged.modifiedCount)
+          throw new Error(`Transport source ${transport.wasteSourceId} is unavailable`);
+        await due(
+          transport.gameId,
+          "municipality.transport.updated",
+          { wasteSourceId: transport.wasteSourceId, status: "at_mrf" },
+          `team:${transport.gameId}:${transport.teamId}`,
+          session,
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
   }
   for (const pendingTransfer of await MaterialTransfer.find({
     status: "in_transit",
     arrivesAt: { $lte: current },
   })) {
     const session = await mongoose.startSession();
-    let completedTransfer: any = null;
     try {
       await session.withTransaction(async () => {
-        completedTransfer = await MaterialTransfer.findOneAndUpdate(
+        const completedTransfer = await MaterialTransfer.findOneAndUpdate(
           { _id: pendingTransfer._id, status: "in_transit" },
           { $set: { status: "completed", completedAt: current } },
           { new: true, session },
         ).lean();
         if (!completedTransfer) return;
         const destinationPath = `roleInventories.${completedTransfer.toRole}.${completedTransfer.materialType}.${completedTransfer.grade}`;
-        await GameTeamState.updateOne(
+        const destinationChanged = await GameTeamState.updateOne(
           {
             gameId: completedTransfer.gameId,
             teamId: completedTransfer.teamId,
@@ -752,25 +804,27 @@ async function settleDueEntities(): Promise<void> {
           },
           { session },
         );
+        if (!destinationChanged.modifiedCount)
+          throw new Error(`Transfer destination ${completedTransfer.teamId} is unavailable`);
+        await due(
+          completedTransfer.gameId,
+          "material.transfer.updated",
+          {
+            transferId: String(completedTransfer._id),
+            status: "completed",
+            fromRole: completedTransfer.fromRole,
+            toRole: completedTransfer.toRole,
+            material: completedTransfer.materialType,
+            grade: completedTransfer.grade,
+            quantityKg: completedTransfer.quantityKg,
+          },
+          `team:${completedTransfer.gameId}:${completedTransfer.teamId}`,
+          session,
+        );
       });
     } finally {
       await session.endSession();
     }
-    if (!completedTransfer) continue;
-    await due(
-      completedTransfer.gameId,
-      "material.transfer.updated",
-      {
-        transferId: String(completedTransfer._id),
-        status: "completed",
-        fromRole: completedTransfer.fromRole,
-        toRole: completedTransfer.toRole,
-        material: completedTransfer.materialType,
-        grade: completedTransfer.grade,
-        quantityKg: completedTransfer.quantityKg,
-      },
-      `team:${completedTransfer.gameId}:${completedTransfer.teamId}`,
-    );
   }
   for (const source of await WasteSource.find({
     status: "available",
@@ -810,75 +864,112 @@ async function settleDueEntities(): Promise<void> {
     status: "processing",
     dueAt: { $lte: current },
   })) {
-    const changed = await ProcessJob.updateOne(
-      { _id: job._id, status: "processing" },
-      { $set: { status: "completed" } },
-    );
-    if (!changed.modifiedCount) continue;
-    const source = await WasteSource.findById(job.wasteSourceId).lean();
-    const team = await GameTeamState.findOne({
-      gameId: job.gameId,
-      teamId: job.teamId,
-    });
-    if (!source || !team) continue;
-    const methodId = methodForLegacyJob(job, source);
-    const result = job.result ?? calculateProcessing(source as any, methodId);
-    if (!team.roleInventories?.mrf) {
-      const defaults = emptyRoleInventories();
-      team.roleInventories = { ...defaults, ...(team.roleInventories ?? {}) };
-    }
-    if (result.grade)
-      for (const material of materialKeys)
-        if (result.outputKg[material] > 0) {
-          addMaterial(team.inventory, material, result.grade, result.outputKg[material]);
-          addMaterial(
-            team.roleInventories.mrf,
-            material,
-            result.grade,
-            result.outputKg[material],
-          );
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const activeJob = await ProcessJob.findOne({
+          _id: job._id,
+          status: "processing",
+        })
+          .session(session)
+          .lean();
+        if (!activeJob) return;
+        const source = await WasteSource.findOne({
+          _id: activeJob.wasteSourceId,
+          status: "processing",
+        })
+          .session(session)
+          .lean();
+        const team = await GameTeamState.findOne({
+          gameId: activeJob.gameId,
+          teamId: activeJob.teamId,
+        }).session(session);
+        if (!source || !team)
+          throw new Error(`MRF process ${activeJob._id} cannot be settled`);
+
+        const methodId = methodForLegacyJob(activeJob, source);
+        const result = activeJob.result ?? calculateProcessing(source as any, methodId);
+        if (!team.roleInventories?.mrf) {
+          const defaults = emptyRoleInventories();
+          team.roleInventories = { ...defaults, ...(team.roleInventories ?? {}) };
         }
-    team.markModified("roleInventories");
-    const healthChange = applyTeamHealthDelta(
-      team as TeamState,
-      result.healthDelta,
-      current,
-    );
-    Object.assign(team, healthChange);
-    team.metrics.recoveredKg += materialKeys.reduce(
-      (sum, material) => sum + result.outputKg[material],
-      0,
-    );
-    if (["landfill", "incineration"].includes(methodId))
-      team.metrics.landfilledKg += result.residueKg;
-    team.provenance.recoveredKg += materialKeys.reduce(
-      (sum, material) => sum + result.outputKg[material],
-      0,
-    );
-    team.revision += 1;
-    await team.save();
-    await WasteSource.updateOne(
-      { _id: source._id },
-      {
-        $set: {
-          status: ["landfill", "incineration"].includes(methodId)
-            ? "landfilled"
-            : "processed",
-        },
-      },
-    );
-    await due(
-      job.gameId,
-      "mrf.processing.updated",
-      {
-        wasteSourceId: String(source._id),
-        methodId,
-        status: "completed",
-        result,
-        healthRecoveryUntil: team.healthRecoveryUntil,
-      },
-      `team:${job.gameId}:${job.teamId}`,
-    );
+        if (result.grade)
+          for (const material of materialKeys)
+            if (result.outputKg[material] > 0) {
+              addMaterial(team.inventory, material, result.grade, result.outputKg[material]);
+              addMaterial(
+                team.roleInventories.mrf,
+                material,
+                result.grade,
+                result.outputKg[material],
+              );
+            }
+        team.markModified("roleInventories");
+        const healthChange = applyTeamHealthDelta(
+          team as TeamState,
+          result.healthDelta,
+          current,
+        );
+        Object.assign(team, healthChange);
+        const recoveredKg = materialKeys.reduce(
+          (sum, material) => sum + result.outputKg[material],
+          0,
+        );
+        team.metrics.recoveredKg += recoveredKg;
+        team.metrics.landfilledKg += result.residueKg;
+        team.provenance.recoveredKg += recoveredKg;
+        team.revision += 1;
+        await team.save({ session });
+
+        const sourceChanged = await WasteSource.updateOne(
+          { _id: source._id, status: "processing" },
+          {
+            $set: {
+              status: ["landfill", "incineration"].includes(methodId)
+                ? "landfilled"
+                : "processed",
+            },
+          },
+          { session },
+        );
+        if (!sourceChanged.modifiedCount)
+          throw new Error(`MRF stream ${source._id} is unavailable`);
+        if (source.parentWasteSourceId) {
+          const activeSiblingCount = await WasteSource.countDocuments({
+            parentWasteSourceId: source.parentWasteSourceId,
+            status: { $in: ["held", "processing"] },
+          }).session(session);
+          if (activeSiblingCount === 0)
+            await WasteSource.updateOne(
+              { _id: source.parentWasteSourceId, status: "decomposed" },
+              { $set: { status: "processed" } },
+              { session },
+            );
+        }
+        const jobChanged = await ProcessJob.updateOne(
+          { _id: activeJob._id, status: "processing" },
+          { $set: { status: "completed" } },
+          { session },
+        );
+        if (!jobChanged.modifiedCount)
+          throw new Error(`MRF process ${activeJob._id} was already settled`);
+        await due(
+          activeJob.gameId,
+          "mrf.processing.updated",
+          {
+            wasteSourceId: String(source._id),
+            methodId,
+            status: "completed",
+            result,
+            healthRecoveryUntil: team.healthRecoveryUntil,
+          },
+          `team:${activeJob.gameId}:${activeJob.teamId}`,
+          session,
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
   }
   for (const held of await WasteSource.find({
     status: "held",
@@ -973,6 +1064,11 @@ async function settleDueEntities(): Promise<void> {
           line.quantityKg;
         const gradeKey = `inventory.${line.materialType}.locked${line.grade}`;
         release[gradeKey] = (release[gradeKey] ?? 0) - line.quantityKg;
+        release[`roleInventories.broker.${line.materialType}.lockedKg`] =
+          (release[`roleInventories.broker.${line.materialType}.lockedKg`] ?? 0) -
+          line.quantityKg;
+        const roleGradeKey = `roleInventories.broker.${line.materialType}.locked${line.grade}`;
+        release[roleGradeKey] = (release[roleGradeKey] ?? 0) - line.quantityKg;
       }
     await GameTeamState.updateOne(
       { gameId: offer.gameId, teamId: offer.offeringTeamId },
@@ -1038,6 +1134,14 @@ async function settleDueEntities(): Promise<void> {
   }
 }
 async function publishOutbox(): Promise<void> {
+  const walletChangingEvents = new Set([
+    "municipality.transport.updated",
+    "mrf.processing.updated",
+    "team.inventory.updated",
+    "material.transfer.updated",
+    "project.claimed",
+    "trade.offer.updated",
+  ]);
   const events = await OutboxEvent.find({
     publishedAt: { $exists: false },
     $or: [
@@ -1071,6 +1175,19 @@ async function publishOutbox(): Promise<void> {
       gameRevision: event.gameRevision ?? 0,
       payload: event.payload,
     });
+    // Team and trade events are private, but wallet changes affect every city's rank.
+    if (
+      walletChangingEvents.has(event.eventType) &&
+      event.target !== `game:${event.gameId}`
+    )
+      emitter.to(`game:${event.gameId}`).emit("leaderboard.updated", {
+        eventId: String(event._id),
+        eventType: "leaderboard.updated",
+        gameId: event.gameId,
+        occurredAt: event.createdAtMs,
+        gameRevision: event.gameRevision ?? 0,
+        payload: { sourceEventType: event.eventType },
+      });
     await OutboxEvent.updateOne(
       { _id: event._id, leaseOwner: instanceId },
       {

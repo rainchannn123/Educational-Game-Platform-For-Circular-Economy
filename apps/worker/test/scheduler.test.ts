@@ -3,6 +3,7 @@ import {
   dueScheduleSlots,
   dueTimeAnnouncements,
   projectForSequence,
+  wasteSpawnIntervalMs,
 } from "../src/scheduler.js";
 
 describe("durable scheduler calculations", () => {
@@ -40,5 +41,18 @@ describe("durable scheduler calculations", () => {
       { remainingMs: 300_000, message: "5 minutes left!" },
       { remainingMs: 60_000, message: "Last 1 minute!" },
     ]);
+  });
+
+  test("produces deterministic per-city waste intervals within the configured bounds", () => {
+    const intervals = Array.from({ length: 12 }, (_, sequence) =>
+      wasteSpawnIntervalMs(42, 3, sequence, 10_000, 30_000),
+    );
+    expect(intervals).toEqual(
+      Array.from({ length: 12 }, (_, sequence) =>
+        wasteSpawnIntervalMs(42, 3, sequence, 10_000, 30_000),
+      ),
+    );
+    expect(intervals.every((value) => value >= 10_000 && value <= 30_000)).toBe(true);
+    expect(wasteSpawnIntervalMs(42, 4, 0, 10_000, 30_000)).not.toBe(intervals[0]);
   });
 });

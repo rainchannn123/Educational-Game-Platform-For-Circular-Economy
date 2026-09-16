@@ -15,6 +15,7 @@ import {
   chatSchema,
   claimSchema,
   createTradeSchema,
+  decomposeWasteSchema,
   dispatchCollectionSchema,
   errorMessages,
   externalPurchaseSchema,
@@ -799,7 +800,7 @@ export const createApp = (env: Env = readEnv()): express.Express => {
           .lean(),
         GameTeamState.find({ gameId: request.params.gameId })
           .sort({ citySlot: 1 })
-          .select("teamId citySlot status totalCO2Kg")
+          .select("teamId citySlot status totalCO2Kg walletCents")
           .lean(),
         ChatMessage.find({
           gameId: request.params.gameId,
@@ -836,6 +837,27 @@ export const createApp = (env: Env = readEnv()): express.Express => {
           totalCO2Kg: entry.totalCO2Kg,
         })) as any,
       ).multiplierBasisPoints;
+      const publicLeaderboard = leaderboard
+        .map((entry) => ({
+          teamId: entry.teamId,
+          citySlot: entry.citySlot,
+          name:
+            teamNameById.get(String(entry.teamId)) ??
+            `City ${entry.citySlot ?? "?"}`,
+          walletCents: entry.walletCents ?? 0,
+          rewardMultiplierBasisPoints: calculateCo2Multiplier(
+            entry as any,
+            leaderboard as any,
+          ).multiplierBasisPoints,
+        }))
+        .sort(
+          (left, right) =>
+            right.walletCents - left.walletCents ||
+            (left.citySlot ?? Number.MAX_SAFE_INTEGER) -
+              (right.citySlot ?? Number.MAX_SAFE_INTEGER) ||
+            String(left.teamId).localeCompare(String(right.teamId)),
+        )
+        .map((entry, index) => ({ ...entry, rank: index + 1 }));
       const snapshotTime = Date.now();
       const overdueActive = projects.filter(
         (project) =>
@@ -885,9 +907,7 @@ export const createApp = (env: Env = readEnv()): express.Express => {
             currentHealthMission: mission,
             mrfActionGuide: Object.fromEntries(
               wasteSources
-                .filter((source: any) =>
-                  ["at_mrf", "held"].includes(source.status),
-                )
+                .filter((source: any) => source.status === "held")
                 .map((source: any) => [source._id, mrfGuideForSource(source)]),
             ),
           },
@@ -904,13 +924,7 @@ export const createApp = (env: Env = readEnv()): express.Express => {
           chatMessages: chatMessages.reverse(),
           globalChatMessages: globalChatMessages.reverse(),
           announcements: announcements.reverse(),
-          publicLeaderboard: leaderboard.map((entry) => ({
-            teamId: entry.teamId,
-            citySlot: entry.citySlot,
-            name:
-              teamNameById.get(String(entry.teamId)) ??
-              `City ${entry.citySlot ?? "?"}`,
-          })),
+          publicLeaderboard,
         },
       });
     } catch (error) {
@@ -963,6 +977,18 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         body.expectedTeamRevision,
         body.payload.wasteSourceId,
         body.payload.methodId,
+      ),
+    ),
+  );
+  app.post(
+    "/v1/games/:gameId/mrf/decompositions",
+    command(decomposeWasteSchema, (body, request) =>
+      service.decomposeWaste(
+        String(request.params.gameId),
+        request.principal!.userId,
+        body.commandId,
+        body.expectedTeamRevision,
+        body.payload.wasteSourceId,
       ),
     ),
   );

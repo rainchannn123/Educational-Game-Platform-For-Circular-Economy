@@ -96,19 +96,45 @@ const formatCountdown = (target: number, current: number) => {
   const seconds = Math.max(0, Math.ceil((target - current) / 1000));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 };
+const formatTransportCountdown = (target: number, current: number) => {
+  const seconds = Math.max(0, Math.ceil((target - current) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(
+    seconds % 60,
+  ).padStart(2, "0")}`;
+};
 const materials: Material[] = ["paper", "plastic", "metal", "glass", "wood"];
 const grades: Grade[] = ["A", "B", "C"];
 const transferRoutes: Array<{
   route: Route;
   label: string;
   detail: string;
+  time: string;
+  price: string;
+  co2: string;
 }> = [
-  { route: "express", label: "Express", detail: "6s · $0.07/kg · 0.36 CO2/kg" },
-  { route: "standard", label: "Standard", detail: "10s · $0.045/kg · 0.18 CO2/kg" },
+  {
+    route: "express",
+    label: "Express",
+    detail: "6s · $0.07/kg · 0.36 CO2/kg",
+    time: "00:06",
+    price: "$0.07/kg",
+    co2: "0.36/kg",
+  },
+  {
+    route: "standard",
+    label: "Standard",
+    detail: "10s · $0.045/kg · 0.18 CO2/kg",
+    time: "00:10",
+    price: "$0.045/kg",
+    co2: "0.18/kg",
+  },
   {
     route: "consolidated",
     label: "Consolidated",
     detail: "16s · $0.028/kg · 0.10 CO2/kg",
+    time: "00:16",
+    price: "$0.028/kg",
+    co2: "0.10/kg",
   },
 ];
 const realtimeEvents = [
@@ -119,6 +145,8 @@ const realtimeEvents = [
   "project.expired",
   "announcement.created",
   "team.metrics.updated",
+  "leaderboard.updated",
+  "mrf.decomposition.updated",
   "team.health.recovery.started",
   "team.health.recovery.completed",
   "team.inventory.updated",
@@ -466,8 +494,9 @@ export function GameScreen({
     ? Math.max(0, team.healthRecoveryUntil - displayServerTime)
     : 0;
   const teamHealthRecovering =
-    team.health <= 0 ||
-    (typeof team.healthRecoveryUntil === "number" && recoveryRemaining > 0);
+    typeof team.healthRecoveryUntil === "number"
+      ? recoveryRemaining > 0
+      : team.health <= 0;
   const rewardMultiplierBasisPoints = team.rewardMultiplierBasisPoints ?? 10_000;
   const freshDelta = (delta: DeltaValue | null | undefined) =>
     delta && clock - delta.at <= 6000 ? delta : null;
@@ -832,7 +861,7 @@ export function GameScreen({
               </p>
               <button
                 className={styles.projectClaim}
-                disabled={commandBusy}
+                disabled={commandBusy || routeRole !== "municipality"}
                 onClick={() =>
                   void send(`/v1/games/${gameId}/projects/${project._id}/claim`, {
                     expectedTeamRevision: team.revision,
@@ -840,7 +869,11 @@ export function GameScreen({
                   })
                 }
               >
-                {commandBusy ? "Submitting..." : "Complete Project"}
+                {routeRole !== "municipality"
+                  ? "Waiting Muni's action"
+                  : commandBusy
+                    ? "Submitting..."
+                    : "Complete Project"}
               </button>
               </article>
           ))}
@@ -855,6 +888,10 @@ export function GameScreen({
         role={routeRole}
         send={send}
         viewerUserId={data.viewer.userId}
+      />
+      <CityLeaderboard
+        entries={data.publicLeaderboard}
+        viewerTeamId={data.viewer.teamId}
       />
       <InventoryBelt deltas={inventoryDeltas} team={team} />
       <nav className={styles.actionLauncher} aria-label="Game action panels">
@@ -1098,6 +1135,56 @@ function GameChatDock({
           />
         )}
         {activeTab === "ai" && <AiChannel />}
+      </div>
+    </aside>
+  );
+}
+
+function CityLeaderboard({
+  entries,
+  viewerTeamId,
+}: {
+  entries: GameSnapshot["publicLeaderboard"];
+  viewerTeamId: string;
+}) {
+  return (
+    <aside className={styles.cityLeaderboard} aria-labelledby="city-leaderboard-title">
+      <header>
+        <div>
+          <span>Live standings</span>
+          <h2 id="city-leaderboard-title">City ranking</h2>
+        </div>
+        <i>{entries.length} cities</i>
+      </header>
+      <div className={styles.cityLeaderboardTableWrap}>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">City</th>
+              <th scope="col">Wallet</th>
+              <th scope="col">CO2 ×</th>
+              <th scope="col">Rank</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry) => (
+              <tr
+                data-current-city={entry.teamId === viewerTeamId}
+                key={entry.teamId}
+              >
+                <th scope="row">
+                  <strong>{entry.name ?? `City ${entry.citySlot}`}</strong>
+                  <span>City {entry.citySlot}</span>
+                </th>
+                <td>{formatMoney(entry.walletCents)}</td>
+                <td>{formatMultiplier(entry.rewardMultiplierBasisPoints)}</td>
+                <td>
+                  <b>{entry.rank}</b>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </aside>
   );
@@ -1388,7 +1475,11 @@ function InventoryBelt({
         const total = stock.A + stock.B + stock.C;
         const delta = deltas[material];
         return (
-          <div key={material} title={`${material}: ${formatTons(total)} total`}>
+          <div
+            data-material={material}
+            key={material}
+            title={`${material}: ${formatTons(total)} total`}
+          >
             <img src={materialAsset[material]} alt="" />
             <span>{material}</span>
             <strong>{formatTons(total)}</strong>
@@ -1472,21 +1563,35 @@ function RoleInventoryPanel({
   return (
     <section className={styles.roleInventoryPanel} role="tabpanel">
       <div className={styles.roleInventoryGrid}>
-        {materials.map((item) => (
-          <article key={item}>
-            <strong>
+        {materials.map((item) => {
+          const stock = inventory[item];
+          const totalKg = stock.A + stock.B + stock.C;
+          return (
+          <article data-material={item} key={item}>
+            <div className={styles.materialCardHeading}>
               <img src={materialAsset[item]} alt="" />
-              {item}
-            </strong>
-            <span>A {formatTons(inventory[item].A)}</span>
-            <span>B {formatTons(inventory[item].B)}</span>
-            <span>C {formatTons(inventory[item].C)}</span>
+              <span>{item}</span>
+              <div>
+                <small>Total held</small>
+                <strong>{formatTons(totalKg)}</strong>
+              </div>
+            </div>
+            <dl className={styles.materialGradeGrid}>
+              {grades.map((itemGrade) => (
+                <div key={itemGrade}>
+                  <dt>Grade {itemGrade}</dt>
+                  <dd>{formatTons(stock[itemGrade])}</dd>
+                </div>
+              ))}
+            </dl>
           </article>
-        ))}
+          );
+        })}
       </div>
 
-      <div className={styles.transferComposer}>
-        <h3>Send material to a teammate</h3>
+      {role !== "municipality" && (
+      <div className={styles.transferComposer} data-material={material}>
+        <h3>Dispatch material</h3>
         <label>
           Material
           <select value={material} onChange={(event) => setMaterial(event.target.value as Material)}>
@@ -1525,46 +1630,80 @@ function RoleInventoryPanel({
         <fieldset className={styles.routeChoices}>
           <legend>Transport route</legend>
           {transferRoutes.map((choice) => (
-            <label key={choice.route}>
+            <label className={styles.routeOption} key={choice.route}>
               <input
                 checked={route === choice.route}
                 name={`${role}-transfer-route`}
                 onChange={() => setRoute(choice.route)}
                 type="radio"
               />
-              <strong>{choice.label}</strong>
-              <span>{choice.detail}</span>
+              <strong className={styles.routeLabel}>{choice.label}</strong>
+              <span className={styles.routeMetrics}>{choice.detail}</span>
+              <span className={styles.controlHelp} role="tooltip">
+                Time · cost per kg · CO2 per kg
+              </span>
             </label>
           ))}
         </fieldset>
-        <p className="muted">Available: {formatTons(availableKg)} grade {grade} {material}</p>
-        <button
-          disabled={busy || !validQuantity}
-          onClick={() =>
-            void send(`/v1/games/${gameId}/material-transfers`, {
-              expectedTeamRevision: team.revision,
-              payload: { toRole, materialType: material, grade, quantityKg, route },
-            })
-          }
-          type="button"
-        >
-          Dispatch to {toRole}
-        </button>
+        <output className={styles.transferAvailability} data-material={material}>
+          <span>Available</span>
+          <strong>{formatTons(availableKg)}</strong>
+          <small>Grade {grade} {material}</small>
+        </output>
+        <div className={styles.dispatchAction}>
+          <button
+            disabled={busy || !validQuantity}
+            onClick={() =>
+              void send(`/v1/games/${gameId}/material-transfers`, {
+                expectedTeamRevision: team.revision,
+                payload: { toRole, materialType: material, grade, quantityKg, route },
+              })
+            }
+            type="button"
+          >
+            Dispatch to {toRole}
+          </button>
+          <span className={styles.controlHelp} role="tooltip">
+            Sends the selected stock through the chosen route. Inventory settles when it arrives.
+          </span>
+        </div>
       </div>
+      )}
 
       {transfers.length > 0 && (
         <div className={styles.transferList}>
           <h3>Materials in transit</h3>
           {transfers.map((transfer) => (
-            <p key={transfer._id}>
-              {transfer.fromRole} → {transfer.toRole}: {formatTons(transfer.quantityKg)}{" "}
-              grade {transfer.grade} {transfer.materialType} · {transfer.route} · ETA{" "}
-              {formatCountdown(transfer.arrivesAt, currentTime)}
-            </p>
+            <article data-material={transfer.materialType} key={transfer._id}>
+              <span>{transfer.fromRole} → {transfer.toRole}</span>
+              <strong>{formatTons(transfer.quantityKg)}</strong>
+              <span>Grade {transfer.grade} · {transfer.route}</span>
+              <time>ETA {formatCountdown(transfer.arrivesAt, currentTime)}</time>
+            </article>
           ))}
         </div>
       )}
     </section>
+  );
+}
+
+function WasteComposition({
+  compositionKg,
+}: {
+  compositionKg?: Partial<Record<Material, number>>;
+}) {
+  return (
+    <div className={styles.collectionComposition} aria-label="Batch material composition">
+      {materials
+        .filter((material) => (compositionKg?.[material] ?? 0) > 0)
+        .map((material) => (
+          <span className={styles.collectionMaterial} data-material={material} key={material}>
+            <img src={materialAsset[material]} alt="" />
+            <b>{material}</b>
+            <strong>{formatTons(compositionKg?.[material] ?? 0)}</strong>
+          </span>
+        ))}
+    </div>
   );
 }
 
@@ -1600,108 +1739,81 @@ function Municipality({
       },
     ]),
   );
+  const dispatchCollection = (wasteSourceId: string, route: Route) =>
+    void send(`/v1/games/${gameId}/municipality/collections`, {
+      expectedTeamRevision: team.revision,
+      payload: { wasteSourceId, route },
+    });
   return (
     <section className={styles.roleWorkspace}>
       <RoleTabs onChange={setTab} role="municipality" tab={tab} />
       {tab === "operations" ? (
         <div className={styles.queue} role="tabpanel">
-        {transitSources.map((source: any) => {
-          const sourceTransport = transportBySourceId.get(String(source._id));
-          return (
-            <article key={source._id}>
-              <strong className={styles.batchTitle}>
-                <img src={asset("material-bale")} alt="" />
-                {formatTons(source.massKg)} waste batch in transit
-              </strong>
-              <span>
-                <img
-                  className={styles.timerIcon}
-                  src={asset("countdown")}
-                  alt=""
-                />
-                Delivering to MRF in{" "}
-                {(sourceTransport?.arrivesAt ?? source.transitArrivesAt)
-                  ? formatCountdown(
-                      sourceTransport?.arrivesAt ?? source.transitArrivesAt,
-                      currentTime,
-                    )
-                  : "0:00"}
-              </span>
-              <span>
-                Route: {(sourceTransport?.route ?? "standard").replace("-", " ")}
-              </span>
-              <span className="muted">
-                Batch is locked until arrival at MRF queue.
-              </span>
+          {transitSources.map((source: any) => {
+            const sourceTransport = transportBySourceId.get(String(source._id));
+            const route = sourceTransport?.route ?? "standard";
+            const routeOption = transferRoutes.find((option) => option.route === route);
+            const arrivesAt = sourceTransport?.arrivesAt ?? source.transitArrivesAt ?? currentTime;
+            return (
+              <article
+                className={styles.collectionBatch}
+                data-status="in-transit"
+                key={source._id}
+              >
+                <div className={styles.collectionBatchHeader}>
+                  <strong className={styles.batchTitle}>
+                    <img src={asset("material-bale")} alt="" />
+                    Waste batch
+                  </strong>
+                  <b>{formatTons(source.massKg)}</b>
+                </div>
+                <WasteComposition compositionKg={source.compositionKg} />
+                <div className={styles.transportCountdownOverlay}>
+                  <span>{routeOption?.label ?? "Standard"} route to MRF</span>
+                  <strong>{formatTransportCountdown(arrivesAt, currentTime)}</strong>
+                  <small>Arrival countdown</small>
+                </div>
+              </article>
+            );
+          })}
+          {availableSources.map((source: any) => (
+            <article className={styles.collectionBatch} key={source._id}>
+              <div className={styles.collectionBatchHeader}>
+                <strong className={styles.batchTitle}>
+                  <img src={asset("material-bale")} alt="" />
+                  Incoming waste
+                </strong>
+                <b>{formatTons(source.massKg)}</b>
+              </div>
+              <div className={styles.collectionBatchMeta}>
+                <span>Contamination <strong>{(source.contaminationBasisPoints / 100).toFixed(0)}%</strong></span>
+                <span>Expires <strong>{formatCountdown(source.expiresAt, currentTime)}</strong></span>
+              </div>
+              <WasteComposition compositionKg={source.compositionKg} />
+              <div className={styles.collectionRoutes} role="group" aria-label="Transport options">
+                {transferRoutes.map((option) => (
+                  <button
+                    className={styles.collectionRouteButton}
+                    data-route={option.route}
+                    disabled={busy}
+                    key={option.route}
+                    onClick={() => dispatchCollection(source._id, option.route)}
+                    type="button"
+                  >
+                    <span className={styles.collectionRouteMode}>{option.label}</span>
+                    <span className={styles.collectionRouteMetrics}>
+                      <span><small>Arrival</small><strong>{option.time}</strong></span>
+                      <span><small>Cost</small><strong>{option.price}</strong></span>
+                      <span><small>CO2</small><strong>{option.co2}</strong></span>
+                    </span>
+                  </button>
+                ))}
+              </div>
             </article>
-          );
-        })}
-        {availableSources.map((source: any) => (
-          <article key={source._id}>
-            <strong className={styles.batchTitle}>
-              <img src={asset("material-bale")} alt="" />
-              {formatTons(source.massKg)} waste batch
-            </strong>
-            <span>
-              Contamination {(source.contaminationBasisPoints / 100).toFixed(0)}
-              %
-            </span>
-            <span>
-              Expires in {formatCountdown(source.expiresAt, currentTime)}
-            </span>
-            <span>
-              Expected mix:{" "}
-              {materials
-                .filter((material) => source.compositionKg?.[material])
-                .map(
-                  (material) =>
-                    `${material} ${formatTons(source.compositionKg[material])}`,
-                )
-                .join(" · ")}
-            </span>
-            <div>
-              <button
-                disabled={busy}
-                onClick={() =>
-                  void send(`/v1/games/${gameId}/municipality/collections`, {
-                    expectedTeamRevision: team.revision,
-                    payload: { wasteSourceId: source._id, route: "express" },
-                  })
-                }
-              >
-                Express: 6s · $0.07/kg · 0.36 CO2/kg
-              </button>
-              <button
-                disabled={busy}
-                onClick={() =>
-                  void send(`/v1/games/${gameId}/municipality/collections`, {
-                    expectedTeamRevision: team.revision,
-                    payload: { wasteSourceId: source._id, route: "standard" },
-                  })
-                }
-              >
-                Standard: 10s · $0.045/kg · 0.18 CO2/kg
-              </button>
-              <button
-                disabled={busy}
-                onClick={() =>
-                  void send(`/v1/games/${gameId}/municipality/collections`, {
-                    expectedTeamRevision: team.revision,
-                    payload: {
-                      wasteSourceId: source._id,
-                      route: "consolidated",
-                    },
-                  })
-                }
-              >
-                Consolidated: 16s · $0.028/kg · 0.10 CO2/kg
-              </button>
-            </div>
-          </article>
-        ))}
-        {availableSources.length === 0 && (
-          <p className="muted">No collection opportunities available.</p>
-        )}
+          ))}
+          {availableSources.length === 0 && transitSources.length === 0 && (
+            <p className="muted">No collection opportunities available.</p>
+          )}
         </div>
       ) : (
         <RoleInventoryPanel
@@ -1729,31 +1841,90 @@ function Mrf({
   busy: boolean;
   currentTime: number;
 }) {
-  const [tab, setTab] = useState<"operations" | "inventory">("operations");
+  const [tab, setTab] = useState<"decompose" | "recycle" | "inventory">("decompose");
   const guideBySource = team.mrfActionGuide ?? {};
+  const rawBatches = team.wasteSources.filter(
+    (source: any) => source.status === "at_mrf",
+  );
+  const materialStreams = team.wasteSources.filter(
+    (source: any) => source.status === "held",
+  );
   return (
     <section className={styles.roleWorkspace}>
-      <RoleTabs onChange={setTab} role="mrf" tab={tab} />
-      {tab === "operations" ? (
+      <div className={styles.workspaceTabs} role="tablist" aria-label="MRF workspace">
+        <button
+          aria-selected={tab === "decompose"}
+          onClick={() => setTab("decompose")}
+          role="tab"
+          type="button"
+        >
+          Decompose
+        </button>
+        <button
+          aria-selected={tab === "recycle"}
+          onClick={() => setTab("recycle")}
+          role="tab"
+          type="button"
+        >
+          Recycle
+        </button>
+        <button
+          aria-selected={tab === "inventory"}
+          onClick={() => setTab("inventory")}
+          role="tab"
+          type="button"
+        >
+          My inventory
+        </button>
+      </div>
+      {tab === "decompose" ? (
         <div className={styles.queue} role="tabpanel">
-        {team.wasteSources
-          .filter((source: any) => ["at_mrf", "held"].includes(source.status))
-          .map((source: any) => (
+          {rawBatches.map((source: any) => (
+            <article className={styles.collectionBatch} key={source._id}>
+              <div className={styles.collectionBatchHeader}>
+                <strong className={styles.batchTitle}>
+                  <img src={asset("material-bale")} alt="" />
+                  Arrived waste batch
+                </strong>
+                <b>{formatTons(source.massKg)}</b>
+              </div>
+              <div className={styles.collectionBatchMeta}>
+                <span>
+                  Contamination <strong>{(source.contaminationBasisPoints / 100).toFixed(0)}%</strong>
+                </span>
+              </div>
+              <WasteComposition compositionKg={source.compositionKg} />
+              <button
+                disabled={busy}
+                onClick={() =>
+                  void send(`/v1/games/${gameId}/mrf/decompositions`, {
+                    expectedTeamRevision: team.revision,
+                    payload: { wasteSourceId: source._id },
+                  })
+                }
+                type="button"
+              >
+                Decompose Waste
+              </button>
+            </article>
+          ))}
+          {rawBatches.length === 0 && (
+            <p className="muted">No raw waste batches are waiting for decomposition.</p>
+          )}
+        </div>
+      ) : tab === "recycle" ? (
+        <div className={styles.queue} role="tabpanel">
+        {materialStreams.map((source: any) => (
             <article className={styles.mrfBatchCard} key={source._id}>
               <strong className={styles.batchTitle}>
                 <img src={asset("material-bale")} alt="" />
-                {formatTons(source.massKg)} MRF queue batch
+                Separated material stream
               </strong>
               <span>
                 Contamination{" "}
                 {(source.contaminationBasisPoints / 100).toFixed(0)}%
               </span>
-              <span>
-                Mix: {materials
-                  .filter((material) => source.compositionKg?.[material] > 0)
-                  .map((material) => `${material} ${formatTons(source.compositionKg[material])}`)
-                  .join(" · ")}
-              </span>
+              <WasteComposition compositionKg={source.compositionKg} />
               <div className={styles.methodGrid}>
                 {(guideBySource[source._id] ?? []).map((guide) => (
                   <article
@@ -1817,8 +1988,8 @@ function Mrf({
             </p>
           ))}
           {!team.activeJobs.length &&
-            !team.wasteSources.some((source) => ["at_mrf", "held"].includes(source.status)) && (
-              <p className="muted">No batches are waiting at the MRF.</p>
+            materialStreams.length === 0 && (
+              <p className="muted">No separated materials are waiting for recycling.</p>
             )}
         </div>
       ) : (

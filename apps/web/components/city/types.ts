@@ -17,7 +17,7 @@ export type CityFacility =
   | "future-site";
 
 export type CitySourceStatus =
-  "available" | "in_transit" | "at_mrf" | "held" | "processing";
+  "available" | "in_transit" | "at_mrf" | "decomposed" | "held" | "processing";
 
 export interface GameSnapshot {
   game: {
@@ -75,6 +75,7 @@ export interface WasteSource {
   transitArrivesAt?: number;
   queueArrivedAt?: number;
   holdExpiresAt?: number;
+  parentWasteSourceId?: string;
 }
 
 export interface ProcessJob {
@@ -226,6 +227,9 @@ export interface PublicLeaderboardEntry {
   teamId: string;
   citySlot: number;
   name?: string;
+  walletCents: number;
+  rewardMultiplierBasisPoints: number;
+  rank: number;
 }
 
 export type CityTransitKind =

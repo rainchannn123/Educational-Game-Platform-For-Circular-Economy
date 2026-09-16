@@ -99,13 +99,13 @@ describe("deterministic game rules", () => {
     expect(result.grade).toBeNull();
     expect(result.healthDelta).toBe(-3);
   });
-  it("consumes grade B before grade A during a successful claim", () => {
+  it("claims from shared stock distributed across role inventories", () => {
     const team = defaultTeam("a", 1);
     const project = PROJECTS[0]!;
     team.inventory.wood.B = 2000;
     team.inventory.paper.B = 1000;
-    team.roleInventories.municipality.wood.B = 2000;
-    team.roleInventories.municipality.paper.B = 1000;
+    team.roleInventories.mrf.wood.B = 2000;
+    team.roleInventories.broker.paper.B = 1000;
     const result = applyProjectClaim(
       team,
       [team, defaultTeam("b", 2)],
@@ -115,6 +115,11 @@ describe("deterministic game rules", () => {
       0,
     );
     expect(result.team.inventory).toEqual(emptyInventory());
+    expect(result.team.roleInventories).toEqual({
+      municipality: emptyInventory(),
+      mrf: emptyInventory(),
+      broker: emptyInventory(),
+    });
     expect(result.team.walletCents).toBeGreaterThan(team.walletCents);
   });
   it("never creates material when project inventory is partially locked", () => {

@@ -439,7 +439,8 @@ export class GameService {
     const queueCount = await WasteSource.countDocuments({
       gameId,
       teamId: state.teamId,
-      status: { $in: ["in_transit", "at_mrf", "held", "processing"] },
+      parentWasteSourceId: { $exists: false },
+      status: { $in: ["in_transit", "at_mrf", "decomposed"] },
     });
     if (queueCount >= 3) throw new RuleError("MRF_QUEUE_FULL");
     const quote = calculateCollection(source as any, route);
@@ -545,7 +546,7 @@ export class GameService {
       gameId,
       teamId: state.teamId,
     }).lean();
-    if (!source || !["at_mrf", "held"].includes(source.status))
+    if (!source || source.status !== "held")
       throw new RuleError("WASTE_SOURCE_NOT_AVAILABLE");
     if (
       await ProcessJob.exists({
@@ -581,7 +582,7 @@ export class GameService {
         );
         if (!updated.modifiedCount) throw new RuleError("STALE_TEAM_REVISION");
         const sourceChanged = await WasteSource.updateOne(
-          { _id: source._id, status: { $in: ["at_mrf", "held"] } },
+          { _id: source._id, status: "held" },
           { $set: { status: "processing" } },
           { session },
         );
@@ -625,6 +626,100 @@ export class GameService {
       teamRevision: expectedRevision + 1,
       serverTime: startedAt,
       result: { wasteSourceId, methodId, dueAt, calculation },
+    };
+  }
+  async decomposeWaste(
+    gameId: string,
+    userId: string,
+    commandId: string,
+    expectedRevision: number,
+    wasteSourceId: string,
+  ): Promise<CommandResult> {
+    const { state, role } = await this.member(gameId, userId);
+    this.assertRole(role, "mrf");
+    const game = await Game.findById(gameId).lean();
+    this.assertStatus(game?.status ?? "", ["active"]);
+    if (state.revision !== expectedRevision)
+      throw new RuleError("STALE_TEAM_REVISION");
+
+    const session = await mongoose.startSession();
+    let separatedMaterialCount = 0;
+    try {
+      await session.withTransaction(async () => {
+        const source = await WasteSource.findOne({
+          _id: wasteSourceId,
+          gameId,
+          teamId: state.teamId,
+          status: "at_mrf",
+        })
+          .session(session)
+          .lean();
+        if (!source) throw new RuleError("WASTE_SOURCE_NOT_AVAILABLE");
+
+        const stateChanged = await GameTeamState.updateOne(
+          { _id: state._id, revision: expectedRevision },
+          { $inc: { revision: 1 } },
+          { session },
+        );
+        if (!stateChanged.modifiedCount) throw new RuleError("STALE_TEAM_REVISION");
+
+        const sourceChanged = await WasteSource.updateOne(
+          { _id: source._id, status: "at_mrf" },
+          { $set: { status: "decomposed", decomposedAt: now() } },
+          { session },
+        );
+        if (!sourceChanged.modifiedCount)
+          throw new RuleError("WASTE_SOURCE_NOT_AVAILABLE");
+
+        const separatedSources = materialKeys
+          .map((material) => ({
+            material,
+            quantityKg: source.compositionKg?.[material] ?? 0,
+          }))
+          .filter(({ quantityKg }) => quantityKg > 0)
+          .map(({ material, quantityKg }) => ({
+            gameId,
+            teamId: state.teamId,
+            parentWasteSourceId: String(source._id),
+            massKg: quantityKg,
+            compositionKg: Object.fromEntries(
+              materialKeys.map((key) => [key, key === material ? quantityKg : 0]),
+            ),
+            contaminationBasisPoints: source.contaminationBasisPoints,
+            status: "held",
+            expiresAt: source.expiresAt,
+            queueArrivedAt: source.queueArrivedAt,
+          }));
+        if (!separatedSources.length)
+          throw new RuleError("PROCESSING_METHOD_INCOMPATIBLE");
+        await WasteSource.insertMany(separatedSources, { session });
+        separatedMaterialCount = separatedSources.length;
+
+        await this.audit(
+          gameId,
+          state.teamId,
+          "mrf.waste_decomposed",
+          commandId,
+          { userId, role, actorType: "player" },
+          { wasteSourceId, separatedMaterialCount },
+          session,
+        );
+        await this.outbox(
+          gameId,
+          "mrf.decomposition.updated",
+          `team:${gameId}:${state.teamId}`,
+          { wasteSourceId, status: "decomposed", separatedMaterialCount },
+          session,
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
+    return {
+      commandId,
+      teamRevision: expectedRevision + 1,
+      serverTime: now(),
+      result: { wasteSourceId, separatedMaterialCount },
     };
   }
   async externalPurchase(
@@ -710,6 +805,8 @@ export class GameService {
   ): Promise<CommandResult> {
     const membership = await this.member(gameId, userId);
     const fromRole = membership.role;
+    if (fromRole === "municipality")
+      throw new RuleError("ROLE_NOT_AUTHORIZED");
     if (fromRole === toRole || quantityKg < 1 || quantityKg > 10_000)
       throw new RuleError("MATERIAL_TRANSFER_INVALID");
     const game = await Game.findById(gameId).lean();
@@ -959,6 +1056,7 @@ export class GameService {
     expectedRevision: number,
   ): Promise<CommandResult> {
     const membership = await this.member(gameId, userId);
+    this.assertRole(membership.role, "municipality");
     const session = await mongoose.startSession();
     let result: CommandResult | undefined;
     try {

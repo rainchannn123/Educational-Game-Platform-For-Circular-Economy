@@ -46,6 +46,21 @@ export function dueScheduleSlots(
   );
 }
 
+export function wasteSpawnIntervalMs(
+  seed: number,
+  citySlot: number,
+  sequence: number,
+  minimumMs: number,
+  maximumMs: number,
+): number {
+  if (minimumMs > maximumMs) throw new Error("Invalid waste spawn interval");
+  return (
+    minimumMs +
+    (seeded(seed, citySlot * 509 + sequence * 313) %
+      (maximumMs - minimumMs + 1))
+  );
+}
+
 export const timeAnnouncementMilestones = [
   { remainingMs: 15 * 60_000, message: "15 minutes remaining!" },
   { remainingMs: 10 * 60_000, message: "10 minutes remaining!" },

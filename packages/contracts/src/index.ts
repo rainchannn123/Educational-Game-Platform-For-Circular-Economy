@@ -128,6 +128,11 @@ export const processWasteSchema = z.object({
     methodId: processingMethodSchema,
   }),
 });
+export const decomposeWasteSchema = z.object({
+  commandId: commandIdSchema,
+  expectedTeamRevision: z.number().int().nonnegative(),
+  payload: z.object({ wasteSourceId: z.string().min(1) }),
+});
 export const materialTransferSchema = z.object({
   commandId: commandIdSchema,
   expectedTeamRevision: z.number().int().nonnegative(),

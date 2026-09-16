@@ -81,6 +81,7 @@ export interface WasteBatch {
     | "available"
     | "in_transit"
     | "at_mrf"
+    | "decomposed"
     | "held"
     | "processing"
     | "processed"
@@ -441,6 +442,33 @@ export function consumeProjectMaterials(
   return next;
 }
 
+export function consumeProjectRoleInventories(
+  roleInventories: RoleInventories,
+  required: MaterialMap,
+): RoleInventories {
+  const next = structuredClone(roleInventories);
+  const roles: Role[] = ["municipality", "mrf", "broker"];
+  for (const material of materialKeys) {
+    let remaining = required[material];
+    for (const grade of ["B", "A"] as const) {
+      const lockKey = `locked${grade}` as const;
+      for (const role of roles) {
+        const available = Math.max(
+          0,
+          next[role][material][grade] - (next[role][material][lockKey] ?? 0),
+        );
+        const consumed = Math.min(available, remaining);
+        next[role][material][grade] -= consumed;
+        remaining -= consumed;
+        if (remaining === 0) break;
+      }
+      if (remaining === 0) break;
+    }
+    if (remaining > 0) throw new RuleError("PROJECT_REQUIREMENTS_NOT_MET");
+  }
+  return next;
+}
+
 export function assertClaimEligible(
   team: TeamState,
   project: ProjectTemplate,
@@ -450,10 +478,7 @@ export function assertClaimEligible(
   if (team.status === "withdrawn") throw new RuleError("TEAM_WITHDRAWN");
   if (team.health < 20) throw new RuleError("HEALTH_TOO_LOW_TO_CLAIM");
   if (now > expiresAt) throw new RuleError("PROJECT_NOT_ACTIVE");
-  consumeProjectMaterials(
-    team.roleInventories.municipality,
-    project.requirementsKg,
-  );
+  consumeProjectMaterials(team.inventory, project.requirementsKg);
 }
 
 export function applyProjectClaim(
@@ -468,8 +493,8 @@ export function applyProjectClaim(
   assertClaimEligible(team, project, now, expiresAt);
   const receipt = calculateCo2Receipt(team, teams, project.grossRevenueCents);
   const next = structuredClone(team);
-  next.roleInventories.municipality = consumeProjectMaterials(
-    next.roleInventories.municipality,
+  next.roleInventories = consumeProjectRoleInventories(
+    next.roleInventories,
     project.requirementsKg,
   );
   next.inventory = consumeProjectMaterials(
