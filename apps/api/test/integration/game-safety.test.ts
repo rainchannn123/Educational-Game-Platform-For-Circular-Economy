@@ -365,6 +365,13 @@ describe("authoritative game safety", () => {
         rank: 3,
       }),
     ]);
+    const leaderboardResponse = await request(app)
+      .get(`/v1/games/${game._id}/leaderboard`)
+      .set("authorization", `Bearer ${token}`);
+    expect(leaderboardResponse.status).toBe(200);
+    expect(leaderboardResponse.body.data).toEqual(
+      firstSnapshot.body.data.publicLeaderboard,
+    );
 
     await GameTeamState.updateOne(
       { gameId: String(game._id), teamId: String(south._id) },
@@ -566,11 +573,11 @@ describe("authoritative game safety", () => {
     );
   });
 
-  test("moves material from a role pocket into an authoritative transfer", async () => {
+  test("allows MRF to dispatch recovered material to a teammate", async () => {
     const stamp = Date.now() + 2;
     const user = await User.create({
-      displayName: "Transfer Broker",
-      email: `transfer-broker-${stamp}@example.test`,
+      displayName: "Transfer MRF",
+      email: `transfer-mrf-${stamp}@example.test`,
       passwordHash: "not-used",
     });
     const team = await Team.create({
@@ -580,8 +587,8 @@ describe("authoritative game safety", () => {
       members: [
         {
           userId: String(user._id),
-          displayName: "Transfer Broker",
-          role: "broker",
+          displayName: "Transfer MRF",
+          role: "mrf",
           ready: true,
         },
       ],
@@ -596,12 +603,12 @@ describe("authoritative game safety", () => {
     });
     const state = defaultTeam(String(team._id), 1);
     state.inventory.metal.B = 500;
-    state.roleInventories.broker.metal.B = 500;
+    state.roleInventories.mrf.metal.B = 500;
     await GameTeamState.create({
       gameId: String(game._id),
       teamId: String(team._id),
       ...state,
-      memberRoles: { broker: String(user._id) },
+      memberRoles: { mrf: String(user._id) },
     });
 
     const app = createApp(env);
@@ -614,7 +621,7 @@ describe("authoritative game safety", () => {
         commandId: "00000000-0000-4000-8000-000000000031",
         expectedTeamRevision: 0,
         payload: {
-          toRole: "municipality",
+          toRole: "broker",
           materialType: "metal",
           grade: "B",
           quantityKg: 300,
@@ -628,8 +635,8 @@ describe("authoritative game safety", () => {
       commandId: "00000000-0000-4000-8000-000000000031",
     }).lean();
     expect(transfer).toMatchObject({
-      fromRole: "broker",
-      toRole: "municipality",
+      fromRole: "mrf",
+      toRole: "broker",
       materialType: "metal",
       grade: "B",
       quantityKg: 300,
@@ -639,7 +646,7 @@ describe("authoritative game safety", () => {
       gameId: String(game._id),
       teamId: String(team._id),
     }).lean();
-    expect(updatedState?.roleInventories.broker.metal.B).toBe(200);
+    expect(updatedState?.roleInventories.mrf.metal.B).toBe(200);
     expect(updatedState?.inventory.metal.B).toBe(500);
   });
 

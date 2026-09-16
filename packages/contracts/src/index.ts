@@ -50,21 +50,9 @@ export const PROCESSING_METHOD_VALUES = [
   "glass-cullet-remelt",
   "wood-chip-board",
   "landfill",
-  "incineration",
 ] as const;
 export const processingMethodSchema = z.enum(PROCESSING_METHOD_VALUES);
 export const deliveryModeSchema = z.enum(["standard", "low-carbon"]);
-export const pingTypeSchema = z.enum([
-  "need-material",
-  "batch-dispatched",
-  "material-ready",
-  "please-certify",
-  "project-ready",
-  "trade-offer",
-  "health-urgent",
-  "blocked",
-  "acknowledged",
-]);
 
 export type Role = z.infer<typeof roleSchema>;
 export type Material = z.infer<typeof materialSchema>;
@@ -74,7 +62,6 @@ export type Route = z.infer<typeof routeSchema>;
 export type ProcessingMethodId = z.infer<typeof processingMethodSchema>;
 export type DeliveryMode = z.infer<typeof deliveryModeSchema>;
 export type MaterialMap = z.infer<typeof materialMapSchema>;
-export type PingType = z.infer<typeof pingTypeSchema>;
 
 export interface MaterialInventory {
   A: number;
@@ -177,15 +164,6 @@ export const chatSchema = z.object({
     message: z.string().trim().min(1).max(500),
   }),
 });
-export const pingSchema = z.object({
-  commandId: commandIdSchema,
-  payload: z.object({
-    type: pingTypeSchema,
-    entityId: z.string().optional(),
-    materialType: materialSchema.optional(),
-    quantityKg: z.number().int().positive().optional(),
-  }),
-});
 export const tradeTermsSchema = z.object({
   offered: z.object({
     materials: z
@@ -253,7 +231,6 @@ export const errorMessages: Record<string, string> = {
   TRADE_VALUE_OUT_OF_RANGE:
     "The proposed exchange is outside the allowed fair-value range.",
   CHAT_RATE_LIMITED: "Please wait before sending another message.",
-  PING_RATE_LIMITED: "Please wait before sending another ping.",
   CHATBOT_RATE_LIMITED: "The strategy assistant is taking a short break.",
   CHAT_CHANNEL_NOT_AUTHORIZED: "You do not have access to this conversation.",
   COMMAND_IN_PROGRESS: "This command is already being processed. Please retry shortly.",

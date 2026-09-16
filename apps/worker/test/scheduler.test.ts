@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
+import { STANDARD_SCENARIO } from "@circular-city/game-content";
 import {
   dueScheduleSlots,
   dueTimeAnnouncements,
+  healthMissionForSlot,
   projectForSequence,
   wasteSpawnIntervalMs,
 } from "../src/scheduler.js";
@@ -54,5 +56,44 @@ describe("durable scheduler calculations", () => {
     );
     expect(intervals.every((value) => value >= 10_000 && value <= 30_000)).toBe(true);
     expect(wasteSpawnIntervalMs(42, 4, 0, 10_000, 30_000)).not.toBe(intervals[0]);
+  });
+
+  test("schedules the first role quiz at 30 seconds and then every minute", () => {
+    expect(
+      dueScheduleSlots(
+        -1,
+        29_999,
+        STANDARD_SCENARIO.firstHealthMissionMs,
+        STANDARD_SCENARIO.healthMissionMs,
+      ),
+    ).toEqual([]);
+    expect(
+      dueScheduleSlots(
+        -1,
+        30_000,
+        STANDARD_SCENARIO.firstHealthMissionMs,
+        STANDARD_SCENARIO.healthMissionMs,
+      ),
+    ).toEqual([0]);
+    expect(
+      dueScheduleSlots(
+        0,
+        90_000,
+        STANDARD_SCENARIO.firstHealthMissionMs,
+        STANDARD_SCENARIO.healthMissionMs,
+      ),
+    ).toEqual([1]);
+  });
+
+  test("uses every quiz template before repeating a city's quiz deck", () => {
+    const firstDeck = Array.from({ length: 30 }, (_, slot) =>
+      healthMissionForSlot(42, 3, slot).id,
+    );
+    expect(new Set(firstDeck)).toHaveLength(30);
+    expect(firstDeck).toEqual(
+      Array.from({ length: 30 }, (_, slot) =>
+        healthMissionForSlot(42, 3, slot).id,
+      ),
+    );
   });
 });

@@ -1,4 +1,4 @@
-# New Circular City Game Platform: Implementation-Ready Product, Game, UX, and Technical Plan
+# Clash of the Cities- Mission Net Zero: Implementation-Ready Product, Game, UX, and Technical Plan
 
 ## 1. Document Purpose
 
@@ -21,7 +21,7 @@ This plan intentionally takes inspiration from the **coordination pressure patte
 
 ### Product concept
 
-Working concept name: **Circular City Rush**. The title is provisional and must be cleared through product and brand review.
+Game name: **Clash of the Cities- Mission Net Zero**.
 
 Students operate competing circular cities. Each three-player city team converts waste into useful materials, procures missing materials, protects city wellbeing, and races other cities to complete shared civic projects first.
 

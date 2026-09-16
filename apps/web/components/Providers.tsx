@@ -25,10 +25,15 @@ function ActiveGameRedirect() {
       }
     };
     void redirect();
-    const timer = window.setInterval(() => void redirect(), 2_000);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void redirect();
+    };
+    const timer = window.setInterval(refreshWhenVisible, 15_000);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
     return () => {
       active = false;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, [pathname, router]);
 

@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 import { api, getToken } from "../../../lib/api";
 import styles from "./team.module.css";
@@ -42,18 +42,27 @@ export default function TeamDetail() {
   const [team, setTeam] = useState<Team | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [message, setMessage] = useState("");
+  const loadingRef = useRef(false);
+  const currentUserRef = useRef<CurrentUser | null>(null);
   const load = async () => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     try {
       const [nextTeam, user] = await Promise.all([
         api<Team>(`/v1/teams/${teamId}`),
-        api<CurrentUser | null>("/v1/me"),
+        currentUserRef.current
+          ? Promise.resolve(currentUserRef.current)
+          : api<CurrentUser | null>("/v1/me"),
       ]);
       setTeam(nextTeam);
       setCurrentUser(user);
+      currentUserRef.current = user;
     } catch (error) {
       setMessage(
         error instanceof Error ? error.message : "Unable to load team.",
       );
+    } finally {
+      loadingRef.current = false;
     }
   };
   useEffect(() => {
@@ -75,18 +84,48 @@ export default function TeamDetail() {
       {
         auth: { token: getToken() },
         transports: ["websocket"],
+        autoConnect: false,
+        reconnectionAttempts: 6,
+        reconnectionDelay: 600,
+        reconnectionDelayMax: 4_000,
       },
     );
     const refresh = () => void load();
+    let connectTimeout: number | null = null;
+    const connectIfVisible = () => {
+      if (document.visibilityState !== "visible" || socket.connected) return;
+      if (connectTimeout !== null) window.clearTimeout(connectTimeout);
+      connectTimeout = window.setTimeout(() => {
+        connectTimeout = null;
+        if (document.visibilityState === "visible" && !socket.connected)
+          socket.connect();
+      }, 50);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        if (connectTimeout !== null) {
+          window.clearTimeout(connectTimeout);
+          connectTimeout = null;
+        }
+        socket.disconnect();
+      }
+      else connectIfVisible();
+    };
 
     socket.on("connect", () => {
       socket.emit("socket.join-team", { teamId });
     });
     socket.on("team.updated", refresh);
 
-    const refreshTimer = window.setInterval(refresh, 2_000);
+    const refreshTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible" && !socket.connected) refresh();
+    }, 10_000);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    connectIfVisible();
     return () => {
       window.clearInterval(refreshTimer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (connectTimeout !== null) window.clearTimeout(connectTimeout);
       socket.close();
     };
   }, [teamId]);
@@ -161,12 +200,7 @@ export default function TeamDetail() {
         })}
       </section>
       <section className={`card ${styles.checklist}`}>
-        <h2>Readiness checklist</h2>
-        <p>
-          Text chat and structured pings are available. Motion can be reduced
-          through your system setting. All gameplay actions have
-          keyboard-accessible controls.
-        </p>
+        <h2>Press Ready to if you are prepared to start the game!</h2>
         <div
           className={styles.readinessGrid}
           aria-label="Team readiness progress"

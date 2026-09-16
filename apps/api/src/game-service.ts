@@ -563,6 +563,7 @@ export class GameService {
     const startedAt = now();
     const dueAt = startedAt + calculation.durationMs;
     const session = await mongoose.startSession();
+    let jobId = "";
     try {
       await session.withTransaction(async () => {
         const updated = await GameTeamState.updateOne(
@@ -588,7 +589,7 @@ export class GameService {
         );
         if (!sourceChanged.modifiedCount)
           throw new RuleError("WASTE_SOURCE_NOT_AVAILABLE");
-        await ProcessJob.create(
+        const [job] = await ProcessJob.create(
           [
             {
               gameId,
@@ -601,6 +602,7 @@ export class GameService {
           ],
           { session },
         );
+        jobId = String(job!._id);
         await this.audit(
           gameId,
           state.teamId,
@@ -614,7 +616,14 @@ export class GameService {
           gameId,
           "mrf.processing.updated",
           `team:${gameId}:${state.teamId}`,
-          { wasteSourceId, methodId, dueAt, result: calculation },
+          {
+            wasteSourceId,
+            methodId,
+            dueAt,
+            status: "processing",
+            jobId,
+            result: calculation,
+          },
           session,
         );
       });
@@ -625,7 +634,14 @@ export class GameService {
       commandId,
       teamRevision: expectedRevision + 1,
       serverTime: startedAt,
-      result: { wasteSourceId, methodId, dueAt, calculation },
+      result: {
+        wasteSourceId,
+        methodId,
+        dueAt,
+        status: "processing",
+        jobId,
+        calculation,
+      },
     };
   }
   async decomposeWaste(

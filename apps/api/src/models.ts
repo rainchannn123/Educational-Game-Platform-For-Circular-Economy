@@ -70,7 +70,7 @@ export const Team: any =
         status: { type: String, default: "forming" },
       },
       timestamps,
-    ),
+    ).index({ "members.userId": 1 }),
   );
 export const Room: any =
   mongoose.models.Room ??
@@ -95,7 +95,9 @@ export const Room: any =
         ],
       },
       timestamps,
-    ),
+    )
+      .index({ "seating.teamId": 1 })
+      .index({ status: 1, updatedAt: -1 }),
   );
 export const Game: any =
   mongoose.models.Game ??
@@ -125,7 +127,7 @@ export const Game: any =
         activeProjectCount: { type: Number, default: 0 },
       },
       timestamps,
-    ),
+    ).index({ status: 1, schedulerLeaseUntil: 1 }),
   );
 export const GameTeamState: any =
   mongoose.models.GameTeamState ??
@@ -154,7 +156,11 @@ export const GameTeamState: any =
         wasteSpawnSequence: { type: Number, default: 0 },
       },
       timestamps,
-    ).index({ gameId: 1, teamId: 1 }, { unique: true }),
+    )
+      .index({ gameId: 1, teamId: 1 }, { unique: true })
+      .index({ gameId: 1, citySlot: 1 })
+      .index({ gameId: 1, status: 1 })
+      .index({ healthRecoveryUntil: 1 }),
   );
 export const WasteSource: any =
   mongoose.models.WasteSource ??
@@ -176,7 +182,11 @@ export const WasteSource: any =
         decomposedAt: Number,
       },
       timestamps,
-    ).index({ status: 1, expiresAt: 1 }),
+    )
+      .index({ status: 1, expiresAt: 1 })
+      .index({ gameId: 1, teamId: 1, status: 1 })
+      .index({ status: 1, holdExpiresAt: 1 })
+      .index({ parentWasteSourceId: 1, status: 1 }),
   );
 export const Transport: any =
   mongoose.models.Transport ??
@@ -192,7 +202,9 @@ export const Transport: any =
         status: { type: String, default: "in_transit" },
       },
       timestamps,
-    ).index({ status: 1, arrivesAt: 1 }),
+    )
+      .index({ status: 1, arrivesAt: 1 })
+      .index({ gameId: 1, teamId: 1, status: 1 }),
   );
 export const ProcessJob: any =
   mongoose.models.ProcessJob ??
@@ -209,7 +221,9 @@ export const ProcessJob: any =
         status: { type: String, default: "processing" },
       },
       timestamps,
-    ).index({ status: 1, dueAt: 1 }),
+    )
+      .index({ status: 1, dueAt: 1 })
+      .index({ gameId: 1, teamId: 1, status: 1 }),
   );
 export const MaterialTransfer: any =
   mongoose.models.MaterialTransfer ??
@@ -236,6 +250,7 @@ export const MaterialTransfer: any =
       timestamps,
     )
       .index({ status: 1, arrivesAt: 1 })
+      .index({ gameId: 1, teamId: 1, status: 1, arrivesAt: 1 })
       .index({ gameId: 1, teamId: 1, commandId: 1 }, { unique: true }),
   );
 export const GameProject: any =
@@ -286,7 +301,9 @@ export const ProjectWork: any =
         status: { type: String, default: "open" },
       },
       timestamps,
-    ).index({ projectId: 1, teamId: 1 }, { unique: true }),
+    )
+      .index({ projectId: 1, teamId: 1 }, { unique: true })
+      .index({ gameId: 1, teamId: 1, status: 1 }),
   );
 export const TradeOffer: any =
   mongoose.models.TradeOffer ??
@@ -305,7 +322,11 @@ export const TradeOffer: any =
         settlement: Schema.Types.Mixed,
       },
       timestamps,
-    ).index({ gameId: 1, status: 1, expiresAt: 1 }),
+    )
+      .index({ gameId: 1, status: 1, expiresAt: 1 })
+      .index({ gameId: 1, offeringTeamId: 1, status: 1 })
+      .index({ gameId: 1, recipientTeamId: 1, status: 1 })
+      .index({ status: 1, deliveryDueAt: 1 }),
   );
 export const HealthMission: any =
   mongoose.models.HealthMission ??
@@ -323,7 +344,9 @@ export const HealthMission: any =
         healthDelta: Number,
       },
       timestamps,
-    ).index({ gameId: 1, teamId: 1, status: 1 }),
+    )
+      .index({ gameId: 1, teamId: 1, status: 1 })
+      .index({ status: 1, expiresAt: 1 }),
   );
 export const GameResultTeam: any =
   mongoose.models.GameResultTeam ??
@@ -343,7 +366,9 @@ export const GameResultTeam: any =
         provenance: Schema.Types.Mixed,
       },
       timestamps,
-    ).index({ gameId: 1, teamId: 1 }, { unique: true }),
+    )
+      .index({ gameId: 1, teamId: 1 }, { unique: true })
+      .index({ gameId: 1, rank: 1 }),
   );
 export const ChatMessage: any =
   mongoose.models.ChatMessage ??
@@ -361,7 +386,10 @@ export const ChatMessage: any =
         createdAtMs: Number,
       },
       timestamps,
-    ).index({ gameId: 1, teamId: 1, channel: 1, createdAtMs: -1 }),
+    )
+      .index({ gameId: 1, teamId: 1, channel: 1, createdAtMs: -1 })
+      .index({ gameId: 1, channel: 1, createdAtMs: -1 })
+      .index({ gameId: 1, senderUserId: 1, createdAtMs: 1 }),
   );
 export const GameAnnouncement: any =
   mongoose.models.GameAnnouncement ??
@@ -399,7 +427,9 @@ export const ActivityEvent: any =
         payload: Schema.Types.Mixed,
       },
       timestamps,
-    ).index({ gameId: 1, occurredAt: 1 }),
+    )
+      .index({ gameId: 1, occurredAt: 1 })
+      .index({ gameId: 1, actorUserId: 1, type: 1, occurredAt: 1 }),
   );
 export const OutboxEvent: any =
   mongoose.models.OutboxEvent ??
@@ -419,7 +449,7 @@ export const OutboxEvent: any =
         attempts: { type: Number, default: 0 },
       },
       timestamps,
-    ).index({ publishedAt: 1, leaseUntil: 1, createdAt: 1 }),
+    ).index({ publishedAt: 1, leaseUntil: 1, createdAtMs: 1 }),
   );
 export const Idempotency: any =
   mongoose.models.Idempotency ??

@@ -19,6 +19,7 @@ import type {
 } from "@circular-city/contracts";
 import { HEALTH_MISSIONS, MATERIALS } from "@circular-city/game-content";
 import { api, command, getToken } from "../lib/api";
+import { applyRealtimeSnapshotPatch } from "./gameSnapshotCache";
 import type {
   CityFacility,
   CityTransferEffect,
@@ -42,7 +43,6 @@ type Snapshot = GameSnapshot;
 type ActionPanel =
   | "role"
   | "team"
-  | "communication"
   | "history"
   | null;
 type DeltaValue = { value: number; at: number };
@@ -104,6 +104,13 @@ const formatTransportCountdown = (target: number, current: number) => {
 };
 const materials: Material[] = ["paper", "plastic", "metal", "glass", "wood"];
 const grades: Grade[] = ["A", "B", "C"];
+const materialColors: Record<Material, string> = {
+  paper: "#e4b14d",
+  plastic: "#36c8d4",
+  metal: "#90b8ec",
+  glass: "#72d6a9",
+  wood: "#df9660",
+};
 const transferRoutes: Array<{
   route: Route;
   label: string;
@@ -158,7 +165,6 @@ const realtimeEvents = [
   "trade.delivery.updated",
   "mrf.queue.updated",
   "health-mission.created",
-  "ping.created",
   "chat.message.created",
   "game.status.changed",
   "health-mission.updated",
@@ -173,7 +179,6 @@ export function GameScreen({
 }) {
   const queryClient = useQueryClient();
   const [, setNotice] = useState("");
-  const [chat, setChat] = useState("");
   const [connected, setConnected] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
   const [commandBusy, setCommandBusy] = useState(false);
@@ -194,6 +199,8 @@ export function GameScreen({
   const sendLockRef = useRef(false);
   const recentEventIdsRef = useRef<string[]>([]);
   const transferTimeoutsRef = useRef<number[]>([]);
+  const snapshotSyncTimeoutRef = useRef<number | null>(null);
+  const viewerTeamIdRef = useRef<string | null>(null);
   const previousTeamRef = useRef<GameSnapshot["team"] | null>(null);
   const seenQuizResultMissionIdsRef = useRef<string[]>([]);
   useEffect(() => {
@@ -216,8 +223,41 @@ export function GameScreen({
   const snapshot = useQuery({
     queryKey: ["snapshot", gameId],
     queryFn: () => api<Snapshot>(`/v1/games/${gameId}/snapshot`),
-    refetchInterval: 12000,
+    refetchInterval: connected ? 30_000 : 12_000,
   });
+  useEffect(() => {
+    viewerTeamIdRef.current = snapshot.data?.viewer.teamId ?? null;
+  }, [snapshot.data?.viewer.teamId]);
+  const leaderboard = useQuery({
+    queryKey: ["leaderboard", gameId],
+    queryFn: () =>
+      api<GameSnapshot["publicLeaderboard"]>(`/v1/games/${gameId}/leaderboard`),
+    enabled: Boolean(snapshot.data),
+    initialData: snapshot.data?.publicLeaderboard,
+    initialDataUpdatedAt: snapshot.dataUpdatedAt,
+    refetchInterval: connected ? 60_000 : 20_000,
+  });
+  useEffect(() => {
+    if (!snapshot.data) return;
+    queryClient.setQueryData(
+      ["leaderboard", gameId],
+      snapshot.data.publicLeaderboard,
+    );
+  }, [gameId, queryClient, snapshot.data]);
+  const scheduleSnapshotSync = useCallback(() => {
+    if (snapshotSyncTimeoutRef.current !== null) return;
+    snapshotSyncTimeoutRef.current = window.setTimeout(() => {
+      snapshotSyncTimeoutRef.current = null;
+      void queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
+    }, 200);
+  }, [gameId, queryClient]);
+  useEffect(
+    () => () => {
+      if (snapshotSyncTimeoutRef.current !== null)
+        window.clearTimeout(snapshotSyncTimeoutRef.current);
+    },
+    [],
+  );
 
   const enqueueTransferEffect = useCallback(
     (
@@ -295,21 +335,13 @@ export function GameScreen({
         return;
       }
       if (eventName === "project.claimed") {
-        const viewerTeamId = snapshot.data?.viewer.teamId;
+        const viewerTeamId = viewerTeamIdRef.current;
         if (!viewerTeamId || payload.winnerTeamId === viewerTeamId)
           enqueueTransferEffect("project-delivery", { durationMs: 3200 });
       }
     },
-    [enqueueTransferEffect, snapshot.data?.viewer.teamId],
+    [enqueueTransferEffect],
   );
-  useEffect(() => {
-    if (!snapshot.data || !socketRef.current?.connected) return;
-    for (const trade of snapshot.data.trades ?? [])
-      socketRef.current.emit("socket.join-trade", {
-        gameId,
-        tradeOfferId: trade._id,
-      });
-  }, [connected, gameId, snapshot.data]);
   useEffect(() => {
     const socket = io(apiBase, {
       auth: { token: getToken() },
@@ -321,11 +353,22 @@ export function GameScreen({
       reconnectionDelayMax: 4000,
     });
     socketRef.current = socket;
+    let connectTimeout: number | null = null;
     const connectIfVisible = () => {
-      if (document.visibilityState === "visible" && !socket.connected)
-        socket.connect();
+      if (document.visibilityState !== "visible" || socket.connected) return;
+      if (connectTimeout !== null) window.clearTimeout(connectTimeout);
+      // Avoid a development Strict Mode mount/cleanup cycle opening a socket it immediately closes.
+      connectTimeout = window.setTimeout(() => {
+        connectTimeout = null;
+        if (document.visibilityState === "visible" && !socket.connected)
+          socket.connect();
+      }, 50);
     };
     const pauseRealtime = () => {
+      if (connectTimeout !== null) {
+        window.clearTimeout(connectTimeout);
+        connectTimeout = null;
+      }
       if (socket.connected) socket.disconnect();
     };
     const handlePageHide = () => pauseRealtime();
@@ -339,14 +382,26 @@ export function GameScreen({
       socket.emit("socket.join-game", { gameId });
     });
     socket.on("disconnect", () => setConnected(false));
-    const sync = () => {
-      void queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
-    };
     realtimeEvents.forEach((eventName) => {
       socket.on(eventName, (envelope: RealtimeEnvelope) => {
         if (!markEventSeen(envelope?.eventId)) return;
         applyRealtimeVisual(eventName, envelope ?? {});
-        sync();
+        if (eventName === "leaderboard.updated") {
+          void queryClient.invalidateQueries({ queryKey: ["leaderboard", gameId] });
+          return;
+        }
+        const current = queryClient.getQueryData<GameSnapshot>([
+          "snapshot",
+          gameId,
+        ]);
+        const patched = current
+          ? applyRealtimeSnapshotPatch(current, eventName, envelope.payload ?? {})
+          : null;
+        if (patched) {
+          queryClient.setQueryData(["snapshot", gameId], patched);
+          return;
+        }
+        scheduleSnapshotSync();
       });
     });
     socket.on("connect_error", () => {
@@ -363,9 +418,10 @@ export function GameScreen({
       window.removeEventListener("pagehide", handlePageHide);
       window.removeEventListener("pageshow", handlePageShow);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (connectTimeout !== null) window.clearTimeout(connectTimeout);
       socket.close();
     };
-  }, [applyRealtimeVisual, gameId, markEventSeen, queryClient]);
+  }, [applyRealtimeVisual, gameId, markEventSeen, queryClient, scheduleSnapshotSync]);
   useEffect(() => {
     const closePanel = (event: KeyboardEvent) => {
       if (event.key === "Escape") setActionPanel(null);
@@ -443,10 +499,41 @@ export function GameScreen({
       (typeof data.team.healthRecoveryUntil === "number" &&
         data.team.healthRecoveryUntil > serverNow);
     if (!recovering) return;
-    const poll = window.setInterval(() => {
-      void queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
-    }, 1_000);
-    return () => window.clearInterval(poll);
+    const refreshIn =
+      typeof data.team.healthRecoveryUntil === "number" &&
+      data.team.healthRecoveryUntil > serverNow
+        ? data.team.healthRecoveryUntil - serverNow + 250
+        : 3_000;
+    const refresh = window.setTimeout(() => {
+      if (document.visibilityState === "visible")
+        void queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
+    }, refreshIn);
+    return () => window.clearTimeout(refresh);
+  }, [gameId, queryClient, snapshot.data, snapshot.dataUpdatedAt]);
+  useEffect(() => {
+    const data = snapshot.data;
+    if (!data) return;
+    const nextArrivalAt = data.team.transports
+      .filter((transport) => transport.status === "in_transit")
+      .reduce<number | null>(
+        (nearest, transport) =>
+          nearest === null || transport.arrivesAt < nearest
+            ? transport.arrivesAt
+            : nearest,
+        null,
+      );
+    if (nextArrivalAt === null) return;
+    const serverNow =
+      data.game.serverTime + Math.max(0, Date.now() - snapshot.dataUpdatedAt);
+    // The worker ticks every second. Refresh shortly after the persisted arrival time
+    // when a real-time event is delayed, then retry at a low rate until it settles.
+    const refreshIn =
+      nextArrivalAt > serverNow ? nextArrivalAt - serverNow + 1_100 : 1_000;
+    const refresh = window.setTimeout(() => {
+      if (document.visibilityState === "visible")
+        void queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
+    }, refreshIn);
+    return () => window.clearTimeout(refresh);
   }, [gameId, queryClient, snapshot.data, snapshot.dataUpdatedAt]);
   if (snapshot.isLoading)
     return (
@@ -538,10 +625,12 @@ export function GameScreen({
     try {
       const execute = async (retryOnStale: boolean): Promise<boolean> => {
         try {
-          const authoritativeSnapshot = await queryClient.fetchQuery({
-            queryKey: ["snapshot", gameId],
-            queryFn: () => api<Snapshot>(`/v1/games/${gameId}/snapshot`),
-          });
+          const authoritativeSnapshot = retryOnStale
+            ? snapshot.data!
+            : await queryClient.fetchQuery({
+                queryKey: ["snapshot", gameId],
+                queryFn: () => api<Snapshot>(`/v1/games/${gameId}/snapshot`),
+              });
 
           if (authoritativeSnapshot.game.status === "completed") {
             setNotice(
@@ -561,7 +650,7 @@ export function GameScreen({
             return false;
           }
           const isProjectClaimAction = /\/projects\/[^/]+\/claim$/.test(path);
-          const isCommunicationAction = /\/(chat\/messages|pings)$/.test(path);
+          const isChatAction = /\/chat\/messages$/.test(path);
           const isQuizAction = /\/health-missions\/[^/]+\/steps$/.test(path);
           const projectPathMatch = path.match(/\/projects\/([^/]+)\//);
           const projectId = projectPathMatch?.[1] ?? null;
@@ -569,7 +658,7 @@ export function GameScreen({
             authoritativeSnapshot.game.status !== "active" &&
             !(
               authoritativeSnapshot.game.status === "finalizing" &&
-              (isProjectClaimAction || isCommunicationAction || isQuizAction)
+               (isProjectClaimAction || isChatAction || isQuizAction)
             )
           ) {
             setNotice(
@@ -606,15 +695,38 @@ export function GameScreen({
                 }
               : payload;
 
+          let response: any;
           if (method === "PUT") {
             const id = crypto.randomUUID();
-            await api(path, {
+            response = await api(path, {
               method,
               headers: { "idempotency-key": id },
               body: JSON.stringify({ commandId: id, ...commandPayload }),
             });
-          } else await command(path, commandPayload);
+          } else response = await command(path, commandPayload);
           setNotice("Command accepted. The city state is updating.");
+          if (path.endsWith("/chat/messages") && response?.result?.message) {
+            const current = queryClient.getQueryData<GameSnapshot>([
+              "snapshot",
+              gameId,
+            ]);
+            const patched = current
+              ? applyRealtimeSnapshotPatch(current, "chat.message.created", response.result.message)
+              : null;
+            if (patched) queryClient.setQueryData(["snapshot", gameId], patched);
+            return true;
+          }
+          if (path.endsWith("/mrf/processes") && response?.result) {
+            const current = queryClient.getQueryData<GameSnapshot>([
+              "snapshot",
+              gameId,
+            ]);
+            const patched = current
+              ? applyRealtimeSnapshotPatch(current, "mrf.processing.updated", response.result)
+              : null;
+            if (patched) queryClient.setQueryData(["snapshot", gameId], patched);
+            return true;
+          }
           await queryClient.invalidateQueries({
             queryKey: ["snapshot", gameId],
           });
@@ -648,7 +760,7 @@ export function GameScreen({
     }
   };
   const teamLabelById = new Map<string, string>(
-    (data.publicLeaderboard ?? []).map((entry: any): [string, string] => [
+    (leaderboard.data ?? data.publicLeaderboard ?? []).map((entry: any): [string, string] => [
       String(entry.teamId),
       `City ${entry.citySlot}${entry.name ? ` (${entry.name})` : ""}`,
     ]),
@@ -686,9 +798,9 @@ export function GameScreen({
       setNotice(`${workspaceTitle} controls opened.`);
       return;
     }
-    setActionPanel("communication");
+    setActionPanel(null);
     setNotice(
-      `${facility === "mrf" ? "MRF" : facility === "broker" ? "Broker" : "Municipality"} is operated by your teammate. Send them a contextual ping.`,
+      `${facility === "mrf" ? "MRF" : facility === "broker" ? "Broker" : "Municipality"} is operated by your teammate. Use City Signal to coordinate with the team.`,
     );
   };
   const panelTitle =
@@ -696,9 +808,7 @@ export function GameScreen({
       ? workspaceTitle
       : actionPanel === "team"
         ? "Shared Warehouse"
-        : actionPanel === "communication"
-          ? "Team Communication"
-          : "Project History";
+        : "Project History";
   return (
     <main className={styles.gameShell} data-role={routeRole}>
       <CityScene
@@ -715,15 +825,14 @@ export function GameScreen({
           role="alertdialog"
         >
           <div className={styles.healthRecoveryPanel}>
-            <p>City Health Emergency</p>
+            <p>Your City Died!</p>
             <strong>
               {formatCountdown(
                 team.healthRecoveryUntil ?? displayServerTime + 30_000,
                 displayServerTime,
               )}
             </strong>
-            <span>Team actions are paused while City Health recovers.</span>
-            <small>Recovery will restore your city to 20% health.</small>
+            <small>Please Wait for Recovery and Gain 20% Health Back.</small>
           </div>
         </section>
       )}
@@ -890,7 +999,7 @@ export function GameScreen({
         viewerUserId={data.viewer.userId}
       />
       <CityLeaderboard
-        entries={data.publicLeaderboard}
+        entries={leaderboard.data ?? data.publicLeaderboard}
         viewerTeamId={data.viewer.teamId}
       />
       <InventoryBelt deltas={inventoryDeltas} team={team} />
@@ -920,17 +1029,6 @@ export function GameScreen({
           type="button"
         >
           Warehouse
-        </button>
-        <button
-          aria-pressed={actionPanel === "communication"}
-          onClick={() =>
-            setActionPanel(
-              actionPanel === "communication" ? null : "communication",
-            )
-          }
-          type="button"
-        >
-          Team comms
         </button>
         <button
           aria-pressed={actionPanel === "history"}
@@ -995,16 +1093,6 @@ export function GameScreen({
             {actionPanel === "team" && (
               <WarehouseOperations
                 team={team}
-              />
-            )}
-            {actionPanel === "communication" && (
-              <Communication
-                gameId={gameId}
-                chat={chat}
-                setChat={setChat}
-                send={send}
-                busy={commandBusy}
-                messages={data.chatMessages ?? []}
               />
             )}
             {actionPanel === "history" && (
@@ -1078,7 +1166,7 @@ function GameChatDock({
   const [activeTab, setActiveTab] = useState<GameChatTab>("announcements");
   const active = gameChatTabs.find((tab) => tab.id === activeTab)!;
   const isLive =
-    activeTab === "announcements" || activeTab === "team" || activeTab === "global";
+    activeTab === "announcements" || activeTab === "team" || activeTab === "global" || activeTab === "ai";
 
   return (
     <aside className={styles.gameChatDock} aria-label="Game communications">
@@ -1119,7 +1207,6 @@ function GameChatDock({
             busy={busy}
             gameId={gameId}
             messages={messages}
-            role={role}
             send={send}
             viewerUserId={viewerUserId}
           />
@@ -1134,7 +1221,7 @@ function GameChatDock({
             viewerUserId={viewerUserId}
           />
         )}
-        {activeTab === "ai" && <AiChannel />}
+        {activeTab === "ai" && <AiChannel gameId={gameId} role={role} />}
       </div>
     </aside>
   );
@@ -1247,14 +1334,12 @@ function TeamChannel({
   busy,
   gameId,
   messages,
-  role,
   send,
   viewerUserId,
 }: {
   busy: boolean;
   gameId: string;
   messages: GameSnapshot["chatMessages"];
-  role: Role;
   send: (path: string, payload: object, method?: string) => Promise<boolean>;
   viewerUserId: string;
 }) {
@@ -1307,7 +1392,7 @@ function TeamChannel({
           aria-label="Message your team"
           maxLength={500}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder={`Message your ${role} team`}
+          placeholder={`Send message to team members`}
           value={draft}
         />
         <button disabled={busy || !draft.trim()} type="submit">
@@ -1394,19 +1479,102 @@ function GlobalChannel({
   );
 }
 
-/** Future LLM conversation boundary. */
-function AiChannel() {
+type AiConversationMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources?: Array<{ id: string; title: string; score: number }>;
+};
+
+function AiChannel({ gameId, role }: { gameId: string; role: Role }) {
+  const [draft, setDraft] = useState("");
+  const [messages, setMessages] = useState<AiConversationMessage[]>([]);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const feed = useFeedAutoScroll(messages.length);
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const message = draft.trim();
+    if (!message || sending) return;
+    const history = messages.slice(-8).map(({ role: messageRole, content }) => ({
+      role: messageRole,
+      content,
+    }));
+    setMessages((current) => [
+      ...current,
+      { id: `user-${crypto.randomUUID()}`, role: "user", content: message },
+    ]);
+    setDraft("");
+    setError("");
+    setSending(true);
+    try {
+      const response = await api<{
+        reply: string;
+        sources: Array<{ id: string; title: string; score: number }>;
+      }>(`/v1/games/${gameId}/chatbot/messages`, {
+        method: "POST",
+        body: JSON.stringify({ message, history }),
+      });
+      setMessages((current) => [
+        ...current,
+        {
+          id: `assistant-${crypto.randomUUID()}`,
+          role: "assistant",
+          content: response.reply,
+          sources: response.sources,
+        },
+      ]);
+    } catch (requestError) {
+      setError(
+        requestError instanceof Error
+          ? requestError.message
+          : "The AI advisor is temporarily unavailable. Please try again.",
+      );
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
-    <div className={styles.chatChannelPlaceholder} data-channel="ai">
-      <strong>AI advisor reserved</strong>
-      <p>
-        A future LLM advisor can answer gameplay questions without changing
-        authoritative city state.
-      </p>
-      <div className={styles.chatComposerPlaceholder}>
-        <span>AI conversation integration pending</span>
-        <button disabled type="button">Ask</button>
+    <div className={styles.aiChatChannel}>
+      <div className={styles.aiChatFeed} ref={feed}>
+        {messages.length === 0 ? (
+          <div className={styles.chatChannelPlaceholder} data-channel="ai">
+            <span className={styles.chatChannelPulse} />
+            <strong>AI advisor ready</strong>
+            <p>Ask about game rules, circular-economy concepts, or how your {role} role can act.</p>
+            <small>The advisor explains; it cannot perform game actions.</small>
+          </div>
+        ) : (
+          messages.map((message) => (
+            <article className={styles.aiChatMessage} data-role={message.role} key={message.id}>
+              <span>{message.role === "user" ? "You" : "AI advisor"}</span>
+              <p>{message.content}</p>
+              {message.sources && message.sources.length > 0 && (
+                <div className={styles.aiSources}>
+                  {message.sources.map((source) => (
+                    <small key={source.id}>{source.title}</small>
+                  ))}
+                </div>
+              )}
+            </article>
+          ))
+        )}
+        {sending && <p className={styles.aiThinking}>AI advisor is thinking...</p>}
       </div>
+      {error && <p className={styles.aiError}>{error}</p>}
+      <form className={styles.teamChatComposer} onSubmit={submit}>
+        <input
+          aria-label="Ask the AI advisor"
+          maxLength={2000}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder="Ask about the game or circular economy"
+          value={draft}
+        />
+        <button disabled={sending || !draft.trim()} type="submit">
+          {sending ? "..." : "Ask"}
+        </button>
+      </form>
     </div>
   );
 }
@@ -1559,6 +1727,31 @@ function RoleInventoryPanel({
   const validQuantity =
     Number.isInteger(quantityKg) && quantityKg > 0 && quantityKg <= availableKg;
   const transfers = team.materialTransfers ?? [];
+  useEffect(() => {
+    if (availableKg > 0) {
+      setQuantityKg((current) => Math.min(Math.max(1, current), availableKg));
+      return;
+    }
+    const firstAvailable = materials
+      .flatMap((candidateMaterial) =>
+        grades.map((candidateGrade) => ({
+          material: candidateMaterial,
+          grade: candidateGrade,
+          availableKg: Math.max(
+            0,
+            inventory[candidateMaterial][candidateGrade] -
+              (inventory[candidateMaterial][
+                `locked${candidateGrade}` as "lockedA" | "lockedB" | "lockedC"
+              ] ?? 0),
+          ),
+        })),
+      )
+      .find((candidate) => candidate.availableKg > 0);
+    if (!firstAvailable) return;
+    setMaterial(firstAvailable.material);
+    setGrade(firstAvailable.grade);
+    setQuantityKg(Math.min(100, firstAvailable.availableKg));
+  }, [availableKg, inventory, team.revision]);
 
   return (
     <section className={styles.roleInventoryPanel} role="tabpanel">
@@ -1914,73 +2107,71 @@ function Mrf({
         </div>
       ) : tab === "recycle" ? (
         <div className={styles.queue} role="tabpanel">
-        {materialStreams.map((source: any) => (
+        {materialStreams.map((source: any) => {
+          const guides = guideBySource[source._id] ?? [];
+          const recyclingGuide = guides.find((guide) => guide.kind === "recycling");
+          const landfillGuide = guides.find((guide) => guide.methodId === "landfill");
+          const startProcess = (methodId: ProcessingMethodId) =>
+            void send(`/v1/games/${gameId}/mrf/processes`, {
+              expectedTeamRevision: team.revision,
+              payload: { wasteSourceId: source._id, methodId },
+            });
+          return (
             <article className={styles.mrfBatchCard} key={source._id}>
               <strong className={styles.batchTitle}>
                 <img src={asset("material-bale")} alt="" />
                 Separated material stream
               </strong>
               <span>
-                Contamination{" "}
+                Contamination {" "}
                 {(source.contaminationBasisPoints / 100).toFixed(0)}%
               </span>
               <WasteComposition compositionKg={source.compositionKg} />
-              <div className={styles.methodGrid}>
-                {(guideBySource[source._id] ?? []).map((guide) => (
-                  <article
-                    className={styles.methodCard}
-                    data-kind={guide.kind}
-                    key={guide.methodId}
-                    tabIndex={0}
+              <p className={styles.recyclePrompt}>Choose one material path</p>
+              <div className={styles.recycleChoices}>
+                {recyclingGuide && (
+                  <button
+                    className={styles.recycleChoice}
+                    data-kind="recycling"
+                    disabled={busy || !recyclingGuide.eligible}
+                    onClick={() => startProcess(recyclingGuide.methodId as ProcessingMethodId)}
+                    type="button"
                   >
-                    <div className={styles.methodSummary}>
-                      <strong>{guide.shortLabel}</strong>
-                      <span>{Math.floor(guide.durationMs / 1000)}s</span>
-                      <span>{formatMoney(guide.totalCostCents)}</span>
-                      <span>+{formatTons(guide.totalCO2Kg)} CO2e</span>
-                    </div>
-                    <div className={styles.methodDetails}>
-                      <h4>{guide.title}</h4>
-                      <p>{guide.description}</p>
-                      <dl>
-                        <div><dt>Recovered</dt><dd>{formatTons(guide.recoveredKg)}</dd></div>
-                        <div><dt>Residue / loss</dt><dd>{formatTons(guide.residueKg)}</dd></div>
-                        <div><dt>Output</dt><dd>{guide.grade ? `Grade ${guide.grade}` : "None"}</dd></div>
-                        <div>
-                          <dt>Health</dt>
-                          <dd>
-                            {(guide.healthDelta ?? 0) >= 0 ? "+" : ""}
-                            {guide.healthDelta ?? 0}
-                          </dd>
-                        </div>
-                      </dl>
-                      {guide.targetMaterial && (
-                        <p>
-                          Material matrix: -{formatTons(source.compositionKg[guide.targetMaterial] ?? 0)}{" "}
-                          {guide.targetMaterial} input → +{formatTons(guide.outputKg[guide.targetMaterial])}{" "}
-                          grade {guide.grade ?? "-"} output
-                        </p>
-                      )}
-                    </div>
-                    <button
-                      disabled={busy || !guide.eligible}
-                      onClick={() =>
-                        void send(`/v1/games/${gameId}/mrf/processes`, {
-                          expectedTeamRevision: team.revision,
-                          payload: {
-                            wasteSourceId: source._id,
-                            methodId: guide.methodId as ProcessingMethodId,
-                          },
-                        })
-                      }
-                    >
-                      {guide.eligible ? `Start ${guide.shortLabel}` : "Batch too contaminated"}
-                    </button>
-                  </article>
-                ))}
+                    <span>Recycle material</span>
+                    <strong>{recyclingGuide.title}</strong>
+                    <small>{recyclingGuide.description}</small>
+                    <dl>
+                      <div><dt>Output</dt><dd>{formatTons(recyclingGuide.recoveredKg)} · Grade {recyclingGuide.grade ?? "-"}</dd></div>
+                      <div><dt>Time</dt><dd>{Math.floor(recyclingGuide.durationMs / 1000)}s</dd></div>
+                      <div><dt>Cost</dt><dd>{formatMoney(recyclingGuide.totalCostCents)}</dd></div>
+                      <div><dt>CO2</dt><dd>+{formatTons(recyclingGuide.totalCO2Kg)}</dd></div>
+                    </dl>
+                    {!recyclingGuide.eligible && <em>Too contaminated for recovery</em>}
+                  </button>
+                )}
+                {landfillGuide && (
+                  <button
+                    className={styles.recycleChoice}
+                    data-kind="landfill"
+                    disabled={busy || !landfillGuide.eligible}
+                    onClick={() => startProcess(landfillGuide.methodId as ProcessingMethodId)}
+                    type="button"
+                  >
+                    <span>Send to landfill</span>
+                    <strong>Final disposal</strong>
+                    <small>No usable material is recovered from this stream.</small>
+                    <dl>
+                      <div><dt>Output</dt><dd>None</dd></div>
+                      <div><dt>Time</dt><dd>{Math.floor(landfillGuide.durationMs / 1000)}s</dd></div>
+                      <div><dt>Cost</dt><dd>{formatMoney(landfillGuide.totalCostCents)}</dd></div>
+                      <div><dt>CO2</dt><dd>+{formatTons(landfillGuide.totalCO2Kg)}</dd></div>
+                    </dl>
+                  </button>
+                )}
               </div>
             </article>
-          ))}
+          );
+        })}
           {team.activeJobs.map((job) => (
             <p className={styles.processingStatus} key={job._id}>
               {job.methodId.replaceAll("-", " ")} completes in{" "}
@@ -2379,34 +2570,89 @@ function ProjectHistoryNotes({
     </section>
   );
 }
-function WarehouseOperations({ team }: { team: any }) {
+function WarehouseOperations({ team }: { team: GameSnapshot["team"] }) {
+  const materialTotals = materials.map((material) => ({
+    material,
+    totalKg:
+      team.inventory[material].A +
+      team.inventory[material].B +
+      team.inventory[material].C,
+  }));
+  const totalKg = materialTotals.reduce((sum, entry) => sum + entry.totalKg, 0);
+  let accumulatedPercent = 0;
+  const pieGradient =
+    totalKg > 0
+      ? `conic-gradient(${materialTotals
+          .map(({ material, totalKg: materialKg }) => {
+            const start = accumulatedPercent;
+            accumulatedPercent += (materialKg / totalKg) * 100;
+            return `${materialColors[material]} ${start}% ${accumulatedPercent}%`;
+          })
+          .join(", ")})`
+      : "conic-gradient(#355a58 0 100%)";
   return (
-    <section className={styles.overlaySection}>
-      <h2>Shared Warehouse</h2>
-      <p className="muted">
-        All roles use the same stock. Grade B is the default trade material and
-        projects consume eligible stock from B then A.
+    <section className={`${styles.overlaySection} ${styles.warehouseDashboard}`}>
+      <header className={styles.warehouseHeader}>
+        <div>
+          <span>Team material reserve</span>
+          <h2>Shared Warehouse</h2>
+        </div>
+        <strong>{formatTons(totalKg)}</strong>
+      </header>
+      <section className={styles.warehouseAllocation} aria-label="Shared material allocation">
+        <div className={styles.materialPie} style={{ background: pieGradient }}>
+          <div>
+            <span>Total stored</span>
+            <strong>{formatTons(totalKg)}</strong>
+          </div>
+        </div>
+        <div className={styles.materialLegend}>
+          {materialTotals.map(({ material, totalKg: materialKg }) => {
+            const percent = totalKg > 0 ? (materialKg / totalKg) * 100 : 0;
+            return (
+              <div data-material={material} key={material}>
+                <span />
+                <strong>{material}</strong>
+                <b>{percent.toFixed(0)}%</b>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+      <p className={styles.warehouseHint}>
+        Project requirements use this team-wide stock. Material remains allocated to roles for transfers and trade.
       </p>
-      <dl className={styles.inventory}>
+      <div className={styles.warehouseInventoryGrid}>
         {materials.map((material) => {
           const stock = team.inventory[material];
+          const materialTotal = stock.A + stock.B + stock.C;
           return (
-            <div key={material}>
-              <dt>
+            <article data-material={material} key={material}>
+              <div className={styles.materialCardHeading}>
                 <img src={materialAsset[material]} alt="" />
-                {material}
-              </dt>
-              <dd>
-                A {formatTons(stock.A)} · B {formatTons(stock.B)} · C{" "}
-                {formatTons(stock.C)}
-                {stock.lockedKg
-                  ? ` · locked ${formatTons(stock.lockedKg)}`
-                  : ""}
-              </dd>
-            </div>
+                <span>{material}</span>
+                <div>
+                  <small>Shared total</small>
+                  <strong>{formatTons(materialTotal)}</strong>
+                </div>
+              </div>
+              <dl className={styles.materialGradeGrid}>
+                {grades.map((grade) => (
+                  <div key={grade}>
+                    <dt>Grade {grade}</dt>
+                    <dd>{formatTons(stock[grade])}</dd>
+                  </div>
+                ))}
+              </dl>
+              {stock.lockedKg > 0 && (
+                <span className={styles.warehouseLocked}>
+                  {formatTons(stock.lockedKg)} reserved in active trade
+                </span>
+              )}
+            </article>
           );
         })}
-      </dl>
+      </div>
     </section>
   );
 }
@@ -2498,91 +2744,6 @@ function RoleQuizPrompt({
           ) : null}
         </>
       ) : null}
-    </section>
-  );
-}
-function Communication({
-  gameId,
-  chat,
-  setChat,
-  send,
-  busy,
-  messages,
-}: {
-  gameId: string;
-  chat: string;
-  setChat: (value: string) => void;
-  send: (path: string, payload: object, method?: string) => Promise<boolean>;
-  busy: boolean;
-  messages: Array<{
-    _id: string;
-    senderRole: string;
-    content: string;
-    createdAtMs: number;
-  }>;
-}) {
-  return (
-    <section className={styles.overlaySection}>
-      <h2>Team communication</h2>
-      <div className={styles.pings}>
-        {[
-          "need-material",
-          "batch-dispatched",
-          "material-ready",
-          "please-certify",
-          "project-ready",
-          "health-urgent",
-        ].map((type) => (
-          <button
-            key={type}
-            disabled={busy}
-            onClick={() =>
-              void send(`/v1/games/${gameId}/pings`, { payload: { type } })
-            }
-          >
-            {type.replace("-", " ")}
-          </button>
-        ))}
-      </div>
-      <label className="srOnly" htmlFor="team-chat">
-        Team message
-      </label>
-      <textarea
-        id="team-chat"
-        value={chat}
-        maxLength={500}
-        onChange={(event) => setChat(event.target.value)}
-        placeholder="Send a concise team message"
-      />
-      <div
-        className={styles.chatHistory}
-        aria-live="polite"
-        aria-label="Team messages"
-      >
-        {messages.length ? (
-          messages.map((message) => (
-            <p key={message._id}>
-              <strong>{message.senderRole}</strong>{" "}
-              <span>{message.content}</span>
-            </p>
-          ))
-        ) : (
-          <p className="muted">
-            No messages yet. Use pings for quick hand-offs.
-          </p>
-        )}
-      </div>
-      <button
-        disabled={busy || !chat.trim()}
-        onClick={() => {
-          void send(`/v1/games/${gameId}/chat/messages`, {
-            payload: { channel: "team", message: chat },
-          });
-          setChat("");
-        }}
-      >
-        Send team chat
-      </button>
     </section>
   );
 }

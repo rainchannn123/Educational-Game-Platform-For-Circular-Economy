@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api";
 import styles from "./rooms.module.css";
 
@@ -33,8 +33,11 @@ export default function RoomsPage() {
   const [currentUserId, setCurrentUserId] = useState("");
   const [message, setMessage] = useState("");
   const router = useRouter();
+  const loadingRef = useRef(false);
 
   const load = async () => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     try {
       const [nextRooms, teams, user] = await Promise.all([
         api<Room[]>("/v1/rooms"),
@@ -65,13 +68,22 @@ export default function RoomsPage() {
       setMessage(
         error instanceof Error ? error.message : "Unable to load rooms.",
       );
+    } finally {
+      loadingRef.current = false;
     }
   };
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 2_000);
-    return () => window.clearInterval(timer);
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    const timer = window.setInterval(refreshWhenVisible, 10_000);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, []);
 
   async function create(event: FormEvent<HTMLFormElement>) {
@@ -156,7 +168,7 @@ export default function RoomsPage() {
             <p className="muted">You are bringing {leaderTeam.name}.</p>
             <label>
               Name
-              <input name="name" required defaultValue="Circular City Studio" />
+              <input name="name" required defaultValue="Clash of the Cities Studio" />
             </label>
             <label>
               Maximum city teams

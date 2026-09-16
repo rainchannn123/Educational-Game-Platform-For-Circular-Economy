@@ -5,6 +5,8 @@ import type {
   ProcessingMethodId,
   Role,
 } from "@circular-city/contracts";
+import { ROLE_QUIZ_QUESTIONS } from "./role-quiz-questions";
+export { ROLE_QUIZ_QUESTIONS } from "./role-quiz-questions";
 
 export interface MaterialDefinition {
   key: Material;
@@ -207,19 +209,6 @@ export const PROCESSING_METHODS: ProcessingMethodDefinition[] = [
     co2MilliKgPerKg: 2_500,
     recoveryRateBasisPoints: 0,
     healthPenaltyOffset: 0,
-  },
-  {
-    id: "incineration",
-    kind: "disposal",
-    title: "Waste-to-Energy",
-    shortLabel: "Incinerate",
-    description:
-      "Controlled combustion recovers energy and emits less net carbon than landfill, but air pollution and ash cause a stronger health penalty.",
-    durationMs: 6_000,
-    costCentsPerKg: 5,
-    co2MilliKgPerKg: 1_800,
-    recoveryRateBasisPoints: 0,
-    healthPenaltyOffset: -1,
   },
 ];
 
@@ -455,7 +444,8 @@ export const PROJECTS: ProjectTemplate[] = [
     "Sharing reduces demand for new products.",
   ),
 ];
-export const HEALTH_MISSIONS: HealthMissionTemplate[] = [
+// Superseded placeholder mission content. The exported quiz bank below is the active source.
+const LEGACY_HEALTH_MISSIONS: HealthMissionTemplate[] = [
   {
     id: "H01",
     title: "Urgent Collection Triage",
@@ -1037,6 +1027,44 @@ export const HEALTH_MISSIONS: HealthMissionTemplate[] = [
   },
 ];
 
+const roleQuizOptions = (
+  templateId: string,
+  role: Role,
+  item: (typeof ROLE_QUIZ_QUESTIONS)[Role][number],
+): HealthOption[] =>
+  item.choices.map((label, index) => ({
+    key: `${templateId}-${role}-${index + 1}`,
+    label,
+    appropriate: index === item.correctChoiceIndex,
+    highImpact: index === item.correctChoiceIndex,
+  }));
+
+export const HEALTH_MISSIONS: HealthMissionTemplate[] = Array.from(
+  { length: 30 },
+  (_, index) => {
+    const templateId = `Q${String(index + 1).padStart(2, "0")}`;
+    const municipality = ROLE_QUIZ_QUESTIONS.municipality[index]!;
+    const mrf = ROLE_QUIZ_QUESTIONS.mrf[index]!;
+    const broker = ROLE_QUIZ_QUESTIONS.broker[index]!;
+    return {
+      id: templateId,
+      title: `Role Knowledge Check ${index + 1}`,
+      explanation:
+        "Apply your role knowledge to protect City Health and strengthen the circular material flow.",
+      questions: {
+        municipality: municipality.question,
+        mrf: mrf.question,
+        broker: broker.question,
+      },
+      options: {
+        municipality: roleQuizOptions(templateId, "municipality", municipality),
+        mrf: roleQuizOptions(templateId, "mrf", mrf),
+        broker: roleQuizOptions(templateId, "broker", broker),
+      },
+    };
+  },
+);
+
 export const STANDARD_SCENARIO = {
   id: "standard-urban-rush-v1",
   minimumTeams: 2,
@@ -1058,8 +1086,8 @@ export const STANDARD_SCENARIO = {
   wasteExpiryMs: 55_000,
   mrfQueueCap: 3,
   healthMissionMs: 60_000,
-  firstHealthMissionMs: 0,
-  healthDeadlineMs: 15_000,
+  firstHealthMissionMs: 30_000,
+  healthDeadlineMs: 30_000,
   tradeExpiryMs: 25_000,
   standardTradeMs: 8_000,
   lowCarbonTradeMs: 15_000,

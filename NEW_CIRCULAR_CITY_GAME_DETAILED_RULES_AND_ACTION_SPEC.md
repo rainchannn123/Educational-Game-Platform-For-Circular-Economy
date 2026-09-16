@@ -1,4 +1,4 @@
-# Circular City Rush: Detailed Rules, Content, Action, UX, and Contract Specification
+# Clash of the Cities- Mission Net Zero: Detailed Rules, Content, Action, UX, and Contract Specification
 
 ## 1. Status, Scope, and Precedence
 

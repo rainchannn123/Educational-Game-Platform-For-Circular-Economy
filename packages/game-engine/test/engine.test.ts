@@ -87,7 +87,7 @@ describe("deterministic game rules", () => {
         status: "at_mrf",
         expiresAt: 0,
       },
-      "incineration",
+      "landfill",
     );
     expect(result.outputKg).toEqual({
       paper: 0,
@@ -97,7 +97,7 @@ describe("deterministic game rules", () => {
       wood: 0,
     });
     expect(result.grade).toBeNull();
-    expect(result.healthDelta).toBe(-3);
+    expect(result.healthDelta).toBe(-2);
   });
   it("claims from shared stock distributed across role inventories", () => {
     const team = defaultTeam("a", 1);

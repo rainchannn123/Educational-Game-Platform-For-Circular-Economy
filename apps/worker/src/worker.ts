@@ -23,6 +23,7 @@ import {
 import {
   dueScheduleSlots,
   dueTimeAnnouncements,
+  healthMissionForSlot,
   projectForSequence,
   wasteSpawnIntervalMs,
 } from "./scheduler.js";
@@ -649,11 +650,11 @@ async function advanceGame(game: any): Promise<void> {
           })
         )
           continue;
-        const template =
-          HEALTH_MISSIONS[
-            seeded(game.seed, state.citySlot * 31 + missionSlot) %
-              HEALTH_MISSIONS.length
-          ]!;
+        const template = healthMissionForSlot(
+          game.seed,
+          state.citySlot,
+          missionSlot,
+        );
         const mission = await HealthMission.create({
           gameId: String(game._id),
           teamId: state.teamId,
@@ -925,9 +926,7 @@ async function settleDueEntities(): Promise<void> {
           { _id: source._id, status: "processing" },
           {
             $set: {
-              status: ["landfill", "incineration"].includes(methodId)
-                ? "landfilled"
-                : "processed",
+              status: methodId === "landfill" ? "landfilled" : "processed",
             },
           },
           { session },
@@ -1135,7 +1134,6 @@ async function settleDueEntities(): Promise<void> {
 }
 async function publishOutbox(): Promise<void> {
   const walletChangingEvents = new Set([
-    "municipality.transport.updated",
     "mrf.processing.updated",
     "team.inventory.updated",
     "material.transfer.updated",
@@ -1237,11 +1235,26 @@ async function tick(): Promise<void> {
   await settleDueEntities();
   await publishOutbox();
 }
+let tickRunning = false;
+let tickQueued = false;
+async function runTick(): Promise<void> {
+  if (tickRunning) {
+    tickQueued = true;
+    return;
+  }
+  tickRunning = true;
+  try {
+    do {
+      tickQueued = false;
+      await tick();
+    } while (tickQueued);
+  } catch (error) {
+    console.error("worker tick failed", error);
+  } finally {
+    tickRunning = false;
+  }
+}
 await connectMongo(env);
-console.log("Circular City scheduler worker started");
-setInterval(
-  () =>
-    void tick().catch((error) => console.error("worker tick failed", error)),
-  1000,
-);
-await tick();
+console.log("Clash of the Cities- Mission Net Zero scheduler worker started");
+setInterval(() => void runTick(), 1000);
+await runTick();

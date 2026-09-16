@@ -1,4 +1,4 @@
-import { PROJECTS } from "@circular-city/game-content";
+import { HEALTH_MISSIONS, PROJECTS } from "@circular-city/game-content";
 
 const seeded = (seed: number, cursor: number): number =>
   ((seed * 1103515245 + cursor * 12345) >>> 0) % 10000;
@@ -59,6 +59,22 @@ export function wasteSpawnIntervalMs(
     (seeded(seed, citySlot * 509 + sequence * 313) %
       (maximumMs - minimumMs + 1))
   );
+}
+
+export function healthMissionForSlot(
+  seed: number,
+  citySlot: number,
+  missionSlot: number,
+) {
+  const deckSize = HEALTH_MISSIONS.length;
+  const cycle = Math.floor(missionSlot / deckSize);
+  const deck = Array.from({ length: deckSize }, (_, index) => index);
+  for (let index = deck.length - 1; index > 0; index -= 1) {
+    const swapIndex =
+      seeded(seed + cycle * 97, citySlot * 131 + index * 53) % (index + 1);
+    [deck[index], deck[swapIndex]] = [deck[swapIndex]!, deck[index]!];
+  }
+  return HEALTH_MISSIONS[deck[missionSlot % deckSize]!]!;
 }
 
 export const timeAnnouncementMilestones = [

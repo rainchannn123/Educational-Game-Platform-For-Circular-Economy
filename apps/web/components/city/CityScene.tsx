@@ -245,12 +245,12 @@ export function CityScene({
         </span>
       </div>
 
-      {webGlAvailable && (
+      {/* {webGlAvailable && (
         <div className={styles.avatarControls}>
           <strong>You: {model.role.toUpperCase()}</strong>
           <span>WASD move · Space jump</span>
         </div>
-      )}
+      )} */}
 
       <label className={styles.qualityControl}>
         Scene

@@ -21,7 +21,7 @@ test.describe("live multiplayer game", () => {
     await authenticate(page, municipalityToken!);
     await page.goto(`/games/${gameId}/municipality`);
 
-    await expect(page.getByText("Circular City Rush")).toHaveCount(0);
+    await expect(page.getByText("Clash of the Cities- Mission Net Zero")).toHaveCount(0);
     await expect(page.getByLabel("Match status")).toContainText(/Municipality/);
     await expect(page.getByRole("button", { name: /standard:/i })).toBeVisible();
     await page.keyboard.press("Tab");

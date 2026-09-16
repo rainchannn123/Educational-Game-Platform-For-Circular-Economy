@@ -149,5 +149,5 @@ io.on("connection", (socket) => {
   );
 });
 server.listen(env.API_PORT, () =>
-  console.log(`Circular City API listening on :${env.API_PORT}`),
+  console.log(`Clash of the Cities- Mission Net Zero API listening on :${env.API_PORT}`),
 );

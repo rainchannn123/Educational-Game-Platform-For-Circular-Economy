@@ -22,7 +22,6 @@ import {
   healthStepSchema,
   materialPlanSchema,
   materialTransferSchema,
-  pingSchema,
   processWasteSchema,
   readinessSchema,
 } from "@circular-city/contracts";
@@ -58,6 +57,10 @@ import {
   User,
 } from "./models.js";
 import { GameService } from "./game-service.js";
+import { emitRealtime } from "./realtime.js";
+import { allowChatbotRequest } from "./chatbot/rate-limit.js";
+import { askChatbot } from "./chatbot/service.js";
+import { ChatbotUnavailableError } from "./chatbot/types.js";
 import { emitTeamUpdated } from "./realtime.js";
 
 dotenv.config();
@@ -136,6 +139,48 @@ const mrfGuideForSource = (source: any) => {
   });
 };
 
+async function buildPublicLeaderboard(
+  gameId: string,
+  knownTeamStates?: any[],
+): Promise<{ teamStates: any[]; entries: any[] }> {
+  const teamStates =
+    knownTeamStates ??
+    (await GameTeamState.find({ gameId })
+      .sort({ citySlot: 1 })
+      .select("teamId citySlot status totalCO2Kg walletCents")
+      .lean());
+  const teamNameDocs = await Team.find({
+    _id: { $in: teamStates.map((entry) => entry.teamId) },
+  })
+    .select("name")
+    .lean();
+  const teamNameById = new Map(
+    teamNameDocs.map((entry) => [String(entry._id), entry.name]),
+  );
+  const entries = teamStates
+    .map((entry) => ({
+      teamId: entry.teamId,
+      citySlot: entry.citySlot,
+      name:
+        teamNameById.get(String(entry.teamId)) ??
+        `City ${entry.citySlot ?? "?"}`,
+      walletCents: entry.walletCents ?? 0,
+      rewardMultiplierBasisPoints: calculateCo2Multiplier(
+        entry as any,
+        teamStates as any,
+      ).multiplierBasisPoints,
+    }))
+    .sort(
+      (left, right) =>
+        right.walletCents - left.walletCents ||
+        (left.citySlot ?? Number.MAX_SAFE_INTEGER) -
+          (right.citySlot ?? Number.MAX_SAFE_INTEGER) ||
+        String(left.teamId).localeCompare(String(right.teamId)),
+    )
+    .map((entry, index) => ({ ...entry, rank: index + 1 }));
+  return { teamStates, entries };
+}
+
 const code = (): string =>
   randomBytes(4).toString("hex").slice(0, 6).toUpperCase();
 
@@ -149,6 +194,18 @@ async function createUniqueTeamInviteCode(): Promise<string> {
 
   throw new RuleError("INVITE_CODE_GENERATION_FAILED");
 }
+const chatbotRequestSchema = z.object({
+  message: z.string().trim().min(1).max(2_000),
+  history: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().trim().min(1).max(2_000),
+      }),
+    )
+    .max(8)
+    .default([]),
+});
 const responseError = (error: unknown, response: Response): void => {
   if (error instanceof z.ZodError) {
     response.status(400).json({
@@ -822,42 +879,17 @@ export const createApp = (env: Env = readEnv()): express.Express => {
           .limit(50)
           .lean(),
       ]);
-      const teamNameDocs = await Team.find({
-        _id: { $in: leaderboard.map((entry) => entry.teamId) },
-      })
-        .select("name")
-        .lean();
-      const teamNameById = new Map(
-        teamNameDocs.map((entry) => [String(entry._id), entry.name]),
+      const leaderboardData = await buildPublicLeaderboard(
+        request.params.gameId,
+        leaderboard,
       );
       const rewardMultiplierBasisPoints = calculateCo2Multiplier(
         membership.state as any,
-        leaderboard.map((entry) => ({
+        leaderboardData.teamStates.map((entry) => ({
           status: entry.status,
           totalCO2Kg: entry.totalCO2Kg,
         })) as any,
       ).multiplierBasisPoints;
-      const publicLeaderboard = leaderboard
-        .map((entry) => ({
-          teamId: entry.teamId,
-          citySlot: entry.citySlot,
-          name:
-            teamNameById.get(String(entry.teamId)) ??
-            `City ${entry.citySlot ?? "?"}`,
-          walletCents: entry.walletCents ?? 0,
-          rewardMultiplierBasisPoints: calculateCo2Multiplier(
-            entry as any,
-            leaderboard as any,
-          ).multiplierBasisPoints,
-        }))
-        .sort(
-          (left, right) =>
-            right.walletCents - left.walletCents ||
-            (left.citySlot ?? Number.MAX_SAFE_INTEGER) -
-              (right.citySlot ?? Number.MAX_SAFE_INTEGER) ||
-            String(left.teamId).localeCompare(String(right.teamId)),
-        )
-        .map((entry, index) => ({ ...entry, rank: index + 1 }));
       const snapshotTime = Date.now();
       const overdueActive = projects.filter(
         (project) =>
@@ -924,9 +956,22 @@ export const createApp = (env: Env = readEnv()): express.Express => {
           chatMessages: chatMessages.reverse(),
           globalChatMessages: globalChatMessages.reverse(),
           announcements: announcements.reverse(),
-          publicLeaderboard,
+          publicLeaderboard: leaderboardData.entries,
         },
       });
+    } catch (error) {
+      responseError(error, response);
+    }
+  });
+  app.get("/v1/games/:gameId/leaderboard", async (request, response) => {
+    try {
+      await service.member(
+        request.params.gameId,
+        request.principal!.userId,
+        true,
+      );
+      const leaderboard = await buildPublicLeaderboard(request.params.gameId);
+      response.json({ success: true, data: leaderboard.entries });
     } catch (error) {
       responseError(error, response);
     }
@@ -1148,7 +1193,7 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         content: body.payload.message.replace(/[<>]/g, ""),
         createdAtMs: Date.now(),
       });
-      await OutboxEvent.create({
+      const outbox = await OutboxEvent.create({
         gameId,
         eventType: "chat.message.created",
         target:
@@ -1160,6 +1205,14 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         payload: chat.toObject(),
         createdAtMs: Date.now(),
       });
+      emitRealtime(outbox.target, outbox.eventType, {
+        eventId: String(outbox._id),
+        eventType: outbox.eventType,
+        gameId,
+        occurredAt: outbox.createdAtMs,
+        gameRevision: outbox.gameRevision ?? 0,
+        payload: chat.toObject(),
+      });
       return {
         commandId: body.commandId,
         serverTime: Date.now(),
@@ -1167,72 +1220,65 @@ export const createApp = (env: Env = readEnv()): express.Express => {
       };
     }),
   );
-  app.post(
-    "/v1/games/:gameId/pings",
-    command(pingSchema, async (body, request) => {
-      const gameId = String(request.params.gameId);
-      const membership = await service.member(
-        gameId,
-        request.principal!.userId,
-      );
-      const recentPings = await ActivityEvent.countDocuments({
-        gameId,
-        actorUserId: request.principal!.userId,
-        type: "ping.created",
-        occurredAt: { $gt: Date.now() - 10_000 },
-      });
-      if (recentPings >= 12) throw new RuleError("PING_RATE_LIMITED");
-      const event = {
-        ...body.payload,
-        userId: request.principal!.userId,
-        role: membership.role,
-        createdAt: Date.now(),
-      };
-      await OutboxEvent.create({
-        gameId,
-        eventType: "ping.created",
-        target: `team:${gameId}:${membership.state.teamId}`,
-        payload: event,
-        createdAtMs: Date.now(),
-      });
-      await ActivityEvent.create({
-        gameId,
-        teamId: membership.state.teamId,
-        actorType: "player",
-        actorUserId: request.principal!.userId,
-        actorRole: membership.role,
-        type: "ping.created",
-        occurredAt: event.createdAt,
-        visibility: "team",
-        payload: event,
-      });
-      return {
-        commandId: body.commandId,
-        serverTime: Date.now(),
-        result: event,
-      };
-    }),
-  );
   app.post("/v1/games/:gameId/chatbot/messages", async (request, response) => {
     try {
+      if (!env.CHATBOT_ENABLED || env.CHATBOT_PROVIDER !== "azure-foundry")
+        throw new ChatbotUnavailableError();
       const membership = await service.member(
         request.params.gameId,
         request.principal!.userId,
       );
-      const message = z
-        .object({
-          message: z.string().trim().min(1).max(1000),
-          context: z.enum(["municipality", "mrf", "broker"]).optional(),
-        })
-        .parse(request.body);
+      const requestBody = chatbotRequestSchema.parse(request.body);
+      const clientIp = request.ip || request.socket.remoteAddress || "unknown";
+      if (!allowChatbotRequest(`ip:${clientIp}`, 12, 60_000)) {
+        response.status(429).json({
+          success: false,
+          error: {
+            code: "CHATBOT_RATE_LIMITED",
+            message: "Please wait before asking the AI advisor again.",
+          },
+        });
+        return;
+      }
       const recentRequests = await ActivityEvent.countDocuments({
         gameId: request.params.gameId,
         actorUserId: request.principal!.userId,
         type: "chatbot.requested",
         occurredAt: { $gt: Date.now() - 60_000 },
       });
-      if (recentRequests >= 5) throw new RuleError("CHATBOT_RATE_LIMITED");
-      const reply = `Game Coach: review your shared inventory, active project requirements, and City Health before choosing. This is guidance, not an action. Your ${membership.role} workstation has the authoritative options.`;
+      if (recentRequests >= 5) {
+        response.status(429).json({
+          success: false,
+          error: {
+            code: "CHATBOT_RATE_LIMITED",
+            message: "Please wait before asking the AI advisor again.",
+          },
+        });
+        return;
+      }
+      const sharedKg = Object.values(membership.state.inventory).reduce(
+        (sum: number, stock: any) => sum + stock.A + stock.B + stock.C,
+        0,
+      );
+      const activeProjects = await GameProject.find({
+        gameId: request.params.gameId,
+        status: "active",
+      })
+        .select("template.title")
+        .lean();
+      const chatbot = await askChatbot({
+        env,
+        message: requestBody.message,
+        history: requestBody.history.map((entry) => ({
+          role: entry.role!,
+          content: entry.content!,
+        })),
+        role: membership.role,
+        gameContext:
+          `Role: ${membership.role}. City Health: ${membership.state.health}. ` +
+          `Wallet: ${membership.state.walletCents} cents. Shared material: ${sharedKg} kg. ` +
+          `Active projects: ${activeProjects.map((project: any) => project.template?.title).filter(Boolean).join(", ") || "none"}.`,
+      });
       await ActivityEvent.create({
         gameId: request.params.gameId,
         teamId: membership.state.teamId,
@@ -1243,13 +1289,24 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         occurredAt: Date.now(),
         visibility: "private",
         payload: {
-          context: message.context,
-          length: message.message.length,
-          provider: "disabled-safe-coach",
+          messageLength: requestBody.message.length,
+          historyLength: requestBody.history.length,
+          provider: chatbot.provider,
+          sources: chatbot.sources.map((source) => source.id),
         },
       });
-      response.json({ success: true, data: { reply, provider: "safe-local" } });
+      response.json({ success: true, data: chatbot });
     } catch (error) {
+      if (error instanceof ChatbotUnavailableError) {
+        response.status(503).json({
+          success: false,
+          error: {
+            code: "CHATBOT_UNAVAILABLE",
+            message: "The AI advisor is temporarily unavailable. Please try again.",
+          },
+        });
+        return;
+      }
       responseError(error, response);
     }
   });
