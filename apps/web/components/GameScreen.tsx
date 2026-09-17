@@ -17,12 +17,22 @@ import type {
   Role,
   Route,
 } from "@circular-city/contracts";
-import { HEALTH_MISSIONS, MATERIALS } from "@circular-city/game-content";
+import {
+  HEALTH_MISSIONS,
+  MATERIALS,
+  QUALITY_UPGRADE,
+} from "@circular-city/game-content";
 import { api, command, getToken } from "../lib/api";
 import { applyRealtimeSnapshotPatch } from "./gameSnapshotCache";
+import { MarkdownText } from "./MarkdownText";
+import { nextAuthoritativeRefresh } from "./gameRefreshSchedule";
+import { applyCommandReceiptPatch } from "./gameCommandReceiptCache";
+import { monotonicServerTime, reconcileGameSnapshot } from "./gameSnapshotReconcile";
+import { hasProjectMaterials, projectMaterialEligibility } from "./projectEligibility";
 import type {
   CityFacility,
   CityTransferEffect,
+  GameProject,
   GameSnapshot,
 } from "./city/types";
 import styles from "./GameScreen.module.css";
@@ -159,6 +169,7 @@ const realtimeEvents = [
   "team.inventory.updated",
   "municipality.transport.updated",
   "mrf.processing.updated",
+  "mrf.quality-upgrade.updated",
   "material.transfer.updated",
   "project.readiness.updated",
   "trade.offer.updated",
@@ -181,7 +192,7 @@ export function GameScreen({
   const [, setNotice] = useState("");
   const [connected, setConnected] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
-  const [commandBusy, setCommandBusy] = useState(false);
+  const pendingCommandKeysRef = useRef(new Set<string>());
   const [actionPanel, setActionPanel] = useState<ActionPanel>(null);
   const [selectedFacility, setSelectedFacility] =
     useState<CityFacility>(routeRole);
@@ -189,6 +200,13 @@ export function GameScreen({
     [],
   );
   const [quizFeedback, setQuizFeedback] = useState<QuizFeedback | null>(null);
+  const [tradeNotice, setTradeNotice] = useState<
+    { tone: "accepted" | "declined"; text: string } | null
+  >(null);
+  const [brokerPurchaseNotice, setBrokerPurchaseNotice] = useState<
+    { material: Material; quantityKg: number } | null
+  >(null);
+  const [projectReview, setProjectReview] = useState<GameProject | null>(null);
   const [metricDeltas, setMetricDeltas] = useState<MetricDeltaState>({
     wallet: null,
     health: null,
@@ -196,17 +214,27 @@ export function GameScreen({
     inventory: {},
   });
   const socketRef = useRef<Socket | null>(null);
-  const sendLockRef = useRef(false);
   const recentEventIdsRef = useRef<string[]>([]);
   const transferTimeoutsRef = useRef<number[]>([]);
   const snapshotSyncTimeoutRef = useRef<number | null>(null);
+  const snapshotRefreshInFlightRef = useRef(false);
+  const snapshotRefreshQueuedRef = useRef(false);
+  const monotonicServerTimeRef = useRef(0);
+  const allowClockRebaseRef = useRef(true);
   const viewerTeamIdRef = useRef<string | null>(null);
+  const teamLabelByIdRef = useRef(new Map<string, string>());
+  const tradeNoticeTimeoutRef = useRef<number | null>(null);
+  const brokerPurchaseNoticeTimeoutRef = useRef<number | null>(null);
   const previousTeamRef = useRef<GameSnapshot["team"] | null>(null);
   const seenQuizResultMissionIdsRef = useRef<string[]>([]);
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, []);
+  useEffect(() => {
+    monotonicServerTimeRef.current = 0;
+    allowClockRebaseRef.current = true;
+  }, [gameId]);
   useEffect(
     () => () => {
       transferTimeoutsRef.current.forEach((timeoutId) =>
@@ -222,9 +250,46 @@ export function GameScreen({
   }, [clock, quizFeedback]);
   const snapshot = useQuery({
     queryKey: ["snapshot", gameId],
-    queryFn: () => api<Snapshot>(`/v1/games/${gameId}/snapshot`),
-    refetchInterval: connected ? 30_000 : 12_000,
+    queryFn: async () => {
+      const incoming = await api<Snapshot>(`/v1/games/${gameId}/snapshot`);
+      return reconcileGameSnapshot(
+        queryClient.getQueryData<Snapshot>(["snapshot", gameId]),
+        incoming,
+      );
+    },
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
+  useEffect(() => {
+    allowClockRebaseRef.current = true;
+  }, [snapshot.data?.game.status]);
+  const refreshSnapshot = useCallback(async (): Promise<Snapshot | undefined> => {
+    if (snapshotRefreshInFlightRef.current) {
+      snapshotRefreshQueuedRef.current = true;
+      return queryClient.getQueryData<Snapshot>(["snapshot", gameId]);
+    }
+    snapshotRefreshInFlightRef.current = true;
+    try {
+      const incoming = await api<Snapshot>(`/v1/games/${gameId}/snapshot`);
+      const current = queryClient.getQueryData<Snapshot>(["snapshot", gameId]);
+      const reconciled = reconcileGameSnapshot(current, incoming);
+      queryClient.setQueryData(["snapshot", gameId], reconciled);
+      return reconciled;
+    } finally {
+      snapshotRefreshInFlightRef.current = false;
+      if (snapshotRefreshQueuedRef.current) {
+        snapshotRefreshQueuedRef.current = false;
+        window.setTimeout(() => void refreshSnapshot(), 0);
+      }
+    }
+  }, [gameId, queryClient]);
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshSnapshot();
+    }, connected ? 30_000 : 12_000);
+    return () => window.clearInterval(interval);
+  }, [connected, refreshSnapshot]);
   useEffect(() => {
     viewerTeamIdRef.current = snapshot.data?.viewer.teamId ?? null;
   }, [snapshot.data?.viewer.teamId]);
@@ -238,6 +303,15 @@ export function GameScreen({
     refetchInterval: connected ? 60_000 : 20_000,
   });
   useEffect(() => {
+    const entries = leaderboard.data ?? snapshot.data?.publicLeaderboard ?? [];
+    teamLabelByIdRef.current = new Map(
+      entries.map((entry) => [
+        String(entry.teamId),
+        `City ${entry.citySlot}${entry.name ? ` (${entry.name})` : ""}`,
+      ]),
+    );
+  }, [leaderboard.data, snapshot.data?.publicLeaderboard]);
+  useEffect(() => {
     if (!snapshot.data) return;
     queryClient.setQueryData(
       ["leaderboard", gameId],
@@ -248,13 +322,39 @@ export function GameScreen({
     if (snapshotSyncTimeoutRef.current !== null) return;
     snapshotSyncTimeoutRef.current = window.setTimeout(() => {
       snapshotSyncTimeoutRef.current = null;
-      void queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
+      void refreshSnapshot();
     }, 200);
-  }, [gameId, queryClient]);
+  }, [refreshSnapshot]);
   useEffect(
     () => () => {
       if (snapshotSyncTimeoutRef.current !== null)
         window.clearTimeout(snapshotSyncTimeoutRef.current);
+    },
+    [],
+  );
+  useEffect(
+    () => () => {
+      if (tradeNoticeTimeoutRef.current !== null)
+        window.clearTimeout(tradeNoticeTimeoutRef.current);
+    },
+    [],
+  );
+  useEffect(
+    () => () => {
+      if (brokerPurchaseNoticeTimeoutRef.current !== null)
+        window.clearTimeout(brokerPurchaseNoticeTimeoutRef.current);
+    },
+    [],
+  );
+  const confirmBrokerPurchase = useCallback(
+    (material: Material, quantityKg: number) => {
+      setBrokerPurchaseNotice({ material, quantityKg });
+      if (brokerPurchaseNoticeTimeoutRef.current !== null)
+        window.clearTimeout(brokerPurchaseNoticeTimeoutRef.current);
+      brokerPurchaseNoticeTimeoutRef.current = window.setTimeout(() => {
+        brokerPurchaseNoticeTimeoutRef.current = null;
+        setBrokerPurchaseNotice(null);
+      }, 5_000);
     },
     [],
   );
@@ -320,9 +420,45 @@ export function GameScreen({
         });
         return;
       }
+      if (
+        eventName === "mrf.quality-upgrade.updated" &&
+        payload.status === "completed"
+      ) {
+        enqueueTransferEffect("processed-material", {
+          material: payload.materialType as Material,
+          durationMs: 2600,
+        });
+        return;
+      }
       if (eventName === "trade.delivery.updated" && payload.status === "completed") {
         enqueueTransferEffect("trade-delivery", { durationMs: 2800 });
         return;
+      }
+      if (eventName === "trade.offer.updated") {
+        const offer = payload.offer as any;
+        const viewerTeamId = viewerTeamIdRef.current;
+        if (
+          offer?.offeringTeamId === viewerTeamId &&
+          ["completed", "rejected"].includes(offer.status)
+        ) {
+          const requested = offer.terms?.requested?.materials?.[0];
+          const respondingCity =
+            teamLabelByIdRef.current.get(String(offer.recipientTeamId)) ??
+            "The recipient city";
+          const accepted = offer.status === "completed";
+          setTradeNotice({
+            tone: accepted ? "accepted" : "declined",
+            text: accepted
+              ? `${respondingCity} accepted your request for ${formatTons(requested?.quantityKg ?? 0)} ${requested?.materialType ?? "material"}.`
+              : `${respondingCity} declined your trade request for ${formatTons(requested?.quantityKg ?? 0)} ${requested?.materialType ?? "material"}.`,
+          });
+          if (tradeNoticeTimeoutRef.current !== null)
+            window.clearTimeout(tradeNoticeTimeoutRef.current);
+          tradeNoticeTimeoutRef.current = window.setTimeout(() => {
+            tradeNoticeTimeoutRef.current = null;
+            setTradeNotice(null);
+          }, 6_000);
+        }
       }
       if (
         eventName === "material.transfer.updated" &&
@@ -372,12 +508,21 @@ export function GameScreen({
       if (socket.connected) socket.disconnect();
     };
     const handlePageHide = () => pauseRealtime();
-    const handlePageShow = () => connectIfVisible();
+    const handlePageShow = () => {
+      allowClockRebaseRef.current = true;
+      connectIfVisible();
+      void refreshSnapshot();
+    };
     const handleVisibilityChange = () => {
       if (document.visibilityState === "hidden") pauseRealtime();
-      else connectIfVisible();
+      else {
+        allowClockRebaseRef.current = true;
+        connectIfVisible();
+        void refreshSnapshot();
+      }
     };
     socket.on("connect", () => {
+      allowClockRebaseRef.current = true;
       setConnected(true);
       socket.emit("socket.join-game", { gameId });
     });
@@ -399,6 +544,7 @@ export function GameScreen({
           : null;
         if (patched) {
           queryClient.setQueryData(["snapshot", gameId], patched);
+          if (eventName.startsWith("trade.")) scheduleSnapshotSync();
           return;
         }
         scheduleSnapshotSync();
@@ -421,14 +567,14 @@ export function GameScreen({
       if (connectTimeout !== null) window.clearTimeout(connectTimeout);
       socket.close();
     };
-  }, [applyRealtimeVisual, gameId, markEventSeen, queryClient, scheduleSnapshotSync]);
+  }, [applyRealtimeVisual, gameId, markEventSeen, queryClient, refreshSnapshot, scheduleSnapshotSync]);
   useEffect(() => {
     const closePanel = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setActionPanel(null);
+      if (event.key === "Escape" && !projectReview) setActionPanel(null);
     };
     window.addEventListener("keydown", closePanel);
     return () => window.removeEventListener("keydown", closePanel);
-  }, []);
+  }, [projectReview]);
 
   useEffect(() => {
     const team = snapshot.data?.team;
@@ -506,35 +652,28 @@ export function GameScreen({
         : 3_000;
     const refresh = window.setTimeout(() => {
       if (document.visibilityState === "visible")
-        void queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
+        void refreshSnapshot();
     }, refreshIn);
     return () => window.clearTimeout(refresh);
-  }, [gameId, queryClient, snapshot.data, snapshot.dataUpdatedAt]);
+  }, [refreshSnapshot, snapshot.data, snapshot.dataUpdatedAt]);
   useEffect(() => {
     const data = snapshot.data;
     if (!data) return;
-    const nextArrivalAt = data.team.transports
-      .filter((transport) => transport.status === "in_transit")
-      .reduce<number | null>(
-        (nearest, transport) =>
-          nearest === null || transport.arrivesAt < nearest
-            ? transport.arrivesAt
-            : nearest,
-        null,
-      );
-    if (nextArrivalAt === null) return;
     const serverNow =
       data.game.serverTime + Math.max(0, Date.now() - snapshot.dataUpdatedAt);
-    // The worker ticks every second. Refresh shortly after the persisted arrival time
-    // when a real-time event is delayed, then retry at a low rate until it settles.
-    const refreshIn =
-      nextArrivalAt > serverNow ? nextArrivalAt - serverNow + 1_100 : 1_000;
+    const boundary = nextAuthoritativeRefresh(data, serverNow);
+    if (!boundary) return;
+    const clientJitter =
+      [...data.viewer.userId].reduce((sum, character) => sum + character.charCodeAt(0), 0) %
+      250;
+    // Wait just over one worker tick and stagger clients slightly to avoid a refresh herd.
+    const refreshIn = Math.max(300, boundary.at - serverNow + 1_100 + clientJitter);
     const refresh = window.setTimeout(() => {
       if (document.visibilityState === "visible")
-        void queryClient.invalidateQueries({ queryKey: ["snapshot", gameId] });
+        void refreshSnapshot();
     }, refreshIn);
     return () => window.clearTimeout(refresh);
-  }, [gameId, queryClient, snapshot.data, snapshot.dataUpdatedAt]);
+  }, [refreshSnapshot, snapshot.data, snapshot.dataUpdatedAt]);
   if (snapshot.isLoading)
     return (
       <main className="page">
@@ -575,8 +714,15 @@ export function GameScreen({
       </main>
     );
   const team = data.team;
-  const displayServerTime =
+  const candidateServerTime =
     data.game.serverTime + Math.max(0, clock - snapshot.dataUpdatedAt);
+  const displayServerTime = monotonicServerTime(
+    monotonicServerTimeRef.current,
+    candidateServerTime,
+    allowClockRebaseRef.current,
+  );
+  monotonicServerTimeRef.current = displayServerTime;
+  allowClockRebaseRef.current = false;
   const recoveryRemaining = team.healthRecoveryUntil
     ? Math.max(0, team.healthRecoveryUntil - displayServerTime)
     : 0;
@@ -613,24 +759,21 @@ export function GameScreen({
     payload: object,
     method = "POST",
   ): Promise<boolean> => {
-    if (sendLockRef.current || commandBusy) {
-      setNotice(
-        "Previous action still processing. Please wait for confirmation.",
-      );
+    const commandKey = `${method}:${path}:${JSON.stringify(payload)}`;
+    if (pendingCommandKeysRef.current.has(commandKey)) {
+      setNotice("This action is already being submitted.");
       return false;
     }
-    sendLockRef.current = true;
-    setCommandBusy(true);
+    pendingCommandKeysRef.current.add(commandKey);
     setNotice("Submitting action...");
     try {
       const execute = async (retryOnStale: boolean): Promise<boolean> => {
         try {
           const authoritativeSnapshot = retryOnStale
             ? snapshot.data!
-            : await queryClient.fetchQuery({
-                queryKey: ["snapshot", gameId],
-                queryFn: () => api<Snapshot>(`/v1/games/${gameId}/snapshot`),
-              });
+            : await refreshSnapshot();
+          if (!authoritativeSnapshot)
+            throw new Error("Unable to refresh the latest game state.");
 
           if (authoritativeSnapshot.game.status === "completed") {
             setNotice(
@@ -722,14 +865,26 @@ export function GameScreen({
               gameId,
             ]);
             const patched = current
-              ? applyRealtimeSnapshotPatch(current, "mrf.processing.updated", response.result)
+              ? applyRealtimeSnapshotPatch(current, "mrf.processing.updated", {
+                  ...response.result,
+                  teamRevision: response.teamRevision,
+                })
               : null;
             if (patched) queryClient.setQueryData(["snapshot", gameId], patched);
             return true;
           }
-          await queryClient.invalidateQueries({
-            queryKey: ["snapshot", gameId],
-          });
+          const current = queryClient.getQueryData<GameSnapshot>([
+            "snapshot",
+            gameId,
+          ]);
+          const receiptPatch = current
+            ? applyCommandReceiptPatch(current, path, payload, response)
+            : null;
+          if (receiptPatch) {
+            queryClient.setQueryData(["snapshot", gameId], receiptPatch);
+            return true;
+          }
+          await refreshSnapshot();
           return true;
         } catch (error) {
           const errorCode =
@@ -755,8 +910,7 @@ export function GameScreen({
       };
       return await execute(true);
     } finally {
-      sendLockRef.current = false;
-      setCommandBusy(false);
+      pendingCommandKeysRef.current.delete(commandKey);
     }
   };
   const teamLabelById = new Map<string, string>(
@@ -900,6 +1054,30 @@ export function GameScreen({
           </div>
         </div>
       </header>
+      {tradeNotice && (
+        <aside
+          className={styles.tradeResponseNotice}
+          data-tone={tradeNotice.tone}
+          role="status"
+        >
+          <strong>
+            Trade {tradeNotice.tone === "accepted" ? "accepted" : "declined"}
+          </strong>
+          <span>{tradeNotice.text}</span>
+        </aside>
+      )}
+      {brokerPurchaseNotice && routeRole === "broker" && (
+        <aside
+          className={styles.brokerPurchaseNotice}
+          data-has-trade={Boolean(tradeNotice)}
+          role="status"
+        >
+          <strong>External purchase confirmed</strong>
+          <span>
+            Material: {brokerPurchaseNotice.material} · Amount: {formatTons(brokerPurchaseNotice.quantityKg)} · Grade: Grade B
+          </span>
+        </aside>
+      )}
       <section
         className={styles.projectRail}
         id="project-rail"
@@ -929,19 +1107,49 @@ export function GameScreen({
                 Tier {project.template.tier}
               </p>
               <h3>{project.template.title}</h3>
-              <div className={styles.requirements}>
+                <div className={styles.requirements}>
                 {materials
                   .filter(
                     (material) => project.template.requirementsKg[material],
                   )
                   .map((material) => (
-                    <span key={material}>
+                    <span
+                      className={styles.projectRequirement}
+                      data-material={material}
+                      key={material}
+                    >
                       <img src={materialAsset[material]} alt="" />
                       {material}:{" "}
                       {formatTons(project.template.requirementsKg[material])}
                     </span>
                   ))}
               </div>
+              {materials.some(
+                (material) =>
+                  (project.template.gradeARequiredKg?.[material] ?? 0) > 0,
+              ) && (
+                <div className={styles.requirements}>
+                  <span className={styles.projectQualityLabel}>
+                    Grade A critical portion
+                  </span>
+                  {materials
+                    .filter(
+                      (material) =>
+                        (project.template.gradeARequiredKg?.[material] ?? 0) >
+                        0,
+                    )
+                    .map((material) => (
+                      <span
+                        className={styles.projectRequirement}
+                        data-material={material}
+                        key={material}
+                      >
+                        <img src={materialAsset[material]} alt="" />
+                        {material}: {formatTons(project.template.gradeARequiredKg?.[material] ?? 0)}
+                      </span>
+                    ))}
+                </div>
+              )}
               <p className={styles.projectImpact}>
                 <span className={styles.projectImpactStat}>
                   <img src={asset("wallet")} alt="" />
@@ -970,27 +1178,32 @@ export function GameScreen({
               </p>
               <button
                 className={styles.projectClaim}
-                disabled={commandBusy || routeRole !== "municipality"}
+                disabled={routeRole !== "municipality"}
                 onClick={() =>
-                  void send(`/v1/games/${gameId}/projects/${project._id}/claim`, {
-                    expectedTeamRevision: team.revision,
-                    payload: { confirm: true },
-                  })
+                  routeRole === "municipality" && setProjectReview(project)
                 }
               >
                 {routeRole !== "municipality"
                   ? "Waiting Muni's action"
-                  : commandBusy
-                    ? "Submitting..."
-                    : "Complete Project"}
+                  : "Complete Project"}
               </button>
               </article>
           ))}
         </div>
       </section>
+      {projectReview && routeRole === "municipality" && (
+        <ProjectCompletionReview
+          gameId={gameId}
+          onClose={() => setProjectReview(null)}
+          project={projectReview}
+          rewardMultiplierBasisPoints={rewardMultiplierBasisPoints}
+          send={send}
+          team={team}
+        />
+      )}
       <GameChatDock
         announcements={data.announcements}
-        busy={commandBusy}
+        busy={false}
         gameId={gameId}
         globalMessages={data.globalChatMessages}
         messages={data.chatMessages}
@@ -1066,7 +1279,7 @@ export function GameScreen({
                 team={team}
                 gameId={gameId}
                 send={send}
-                busy={commandBusy}
+                busy={false}
                 currentTime={displayServerTime}
               />
             )}
@@ -1075,7 +1288,7 @@ export function GameScreen({
                 team={team}
                 gameId={gameId}
                 send={send}
-                busy={commandBusy}
+                busy={false}
                 currentTime={displayServerTime}
               />
             )}
@@ -1086,8 +1299,9 @@ export function GameScreen({
                 teams={data.publicLeaderboard}
                 trades={data.trades}
                 send={send}
-                busy={commandBusy}
+                busy={false}
                 currentTime={displayServerTime}
+                onExternalPurchaseConfirmed={confirmBrokerPurchase}
               />
             )}
             {actionPanel === "team" && (
@@ -1107,7 +1321,7 @@ export function GameScreen({
       {showQuizBox && (
         <aside className={styles.quizBox} aria-label="Role quiz" role="region">
           <RoleQuizPrompt
-            busy={commandBusy}
+            busy={false}
             currentTime={displayServerTime}
             feedback={activeQuizFeedback}
             gameId={gameId}
@@ -1128,6 +1342,204 @@ export function GameScreen({
         </aside>
       )}
     </main>
+  );
+}
+
+function ProjectCompletionReview({
+  project,
+  team,
+  gameId,
+  rewardMultiplierBasisPoints,
+  send,
+  onClose,
+}: {
+  project: GameProject;
+  team: GameSnapshot["team"];
+  gameId: string;
+  rewardMultiplierBasisPoints: number;
+  send: (path: string, payload: object, method?: string) => Promise<boolean>;
+  onClose: () => void;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [submitFailed, setSubmitFailed] = useState(false);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const materialRows = projectMaterialEligibility(project.template, team.inventory);
+  const hasEnoughMaterials = hasProjectMaterials(materialRows);
+  const rewardCents = applyMultiplierCents(
+    project.template.grossRevenueCents,
+    rewardMultiplierBasisPoints,
+  );
+  const submit = async () => {
+    if (!hasEnoughMaterials || submitting) return;
+    setSubmitFailed(false);
+    setSubmitting(true);
+    const completed = await send(`/v1/games/${gameId}/projects/${project._id}/claim`, {
+      expectedTeamRevision: team.revision,
+      payload: { confirm: true },
+    });
+    setSubmitting(false);
+    if (completed) onClose();
+    else setSubmitFailed(true);
+  };
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    dialog.showModal();
+    return () => {
+      if (dialog.open) dialog.close();
+    };
+  }, []);
+
+  return (
+    <dialog
+      aria-describedby="project-review-description"
+      aria-labelledby="project-review-title"
+      className={styles.projectReviewBackdrop}
+      onCancel={(event) => {
+        event.preventDefault();
+        onClose();
+      }}
+      ref={dialogRef}
+    >
+      <section className={styles.projectReviewCard}>
+        <header className={styles.projectReviewHeader}>
+          <div>
+            <span>Municipality project review</span>
+            <h2 id="project-review-title">{project.template.title}</h2>
+            <p>Tier {project.template.tier} · confirm shared inventory before submitting.</p>
+          </div>
+          <button
+            aria-label="Quit project review"
+            className={styles.projectReviewClose}
+            onClick={onClose}
+            type="button"
+          >
+            Quit
+          </button>
+        </header>
+
+        <section className={styles.projectReward} aria-label="Project reward">
+          <span>Completion reward</span>
+          <strong>{formatMoney(rewardCents)}</strong>
+          <p>
+            {project.template.co2ImpactKg >= 0 ? "+" : "-"}
+            {formatTons(Math.abs(project.template.co2ImpactKg))} CO2e project impact
+          </p>
+          <p>
+            Estimated at {(rewardMultiplierBasisPoints / 10_000).toFixed(2)}x; the server confirms the final reward when claimed.
+          </p>
+        </section>
+
+        <p className={styles.projectReviewHint} id="project-review-description">
+          Only unlocked Grade A and Grade B material can contribute to project completion. Grade C material must be upgraded before it can be used.
+        </p>
+
+        <div className={styles.projectReviewTables}>
+          <section>
+            <div className={styles.projectReviewSectionTitle}>
+              <span>Shared inventory</span>
+              <strong>Current stored material</strong>
+            </div>
+            <div className={styles.projectReviewTableWrap}>
+              <table className={styles.projectReviewTable}>
+                <thead>
+                  <tr>
+                    <th>Material</th>
+                    <th>Grade A</th>
+                    <th>Grade B</th>
+                    <th>Grade C</th>
+                    <th>Unlocked A+B</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {materialRows.map((row) => (
+                    <tr data-material={row.material} key={row.material}>
+                      <th scope="row">
+                        <span className={styles.projectReviewMaterial} data-material={row.material}>
+                          <img src={materialAsset[row.material]} alt="" />
+                          {row.material}
+                        </span>
+                      </th>
+                      <td>{formatTons(row.gradeAStoredKg)}</td>
+                      <td>{formatTons(row.gradeBStoredKg)}</td>
+                      <td>{formatTons(row.gradeCStoredKg)}</td>
+                      <td>{formatTons(row.eligibleKg)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section>
+            <div className={styles.projectReviewSectionTitle}>
+              <span>Project requirements</span>
+              <strong>Required to complete this listing</strong>
+            </div>
+            <div className={styles.projectReviewTableWrap}>
+              <table className={styles.projectReviewTable}>
+                <thead>
+                  <tr>
+                    <th>Material</th>
+                    <th>Total required</th>
+                    <th>Grade A critical (in total)</th>
+                    <th>Unlocked A+B</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {materialRows.map((row) => (
+                    <tr
+                      data-material={row.material}
+                      data-status={row.hasEnoughMaterial ? "ready" : "short"}
+                      key={row.material}
+                    >
+                      <th scope="row">
+                        <span className={styles.projectReviewMaterial} data-material={row.material}>
+                          <img src={materialAsset[row.material]} alt="" />
+                          {row.material}
+                        </span>
+                      </th>
+                      <td>{formatTons(row.requiredKg)}</td>
+                      <td>
+                        {row.gradeARequiredKg > 0
+                          ? formatTons(row.gradeARequiredKg)
+                          : "None"}
+                      </td>
+                      <td>{formatTons(row.eligibleKg)}</td>
+                      <td>
+                        <span className={styles.projectRequirementStatus} data-status={row.hasEnoughMaterial ? "ready" : "short"}>
+                          {row.hasEnoughMaterial ? "Ready" : "Short"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <footer className={styles.projectReviewFooter}>
+          <p data-state={hasEnoughMaterials ? "ready" : "short"}>
+            {submitFailed
+              ? "The project could not be completed. The listing or authoritative city state may have changed."
+              : hasEnoughMaterials
+              ? "All material requirements are available."
+              : "More eligible Grade A/B material is needed before this project can be completed."}
+          </p>
+          <button
+            className={styles.projectReviewSubmit}
+            disabled={!hasEnoughMaterials || submitting}
+            onClick={() => void submit()}
+            type="button"
+          >
+            {submitting ? "Completing project..." : "Complete Project"}
+          </button>
+        </footer>
+      </section>
+    </dialog>
   );
 }
 
@@ -1549,7 +1961,7 @@ function AiChannel({ gameId, role }: { gameId: string; role: Role }) {
           messages.map((message) => (
             <article className={styles.aiChatMessage} data-role={message.role} key={message.id}>
               <span>{message.role === "user" ? "You" : "AI advisor"}</span>
-              <p>{message.content}</p>
+              <MarkdownText className={styles.aiMarkdown} content={message.content} />
               {message.sources && message.sources.length > 0 && (
                 <div className={styles.aiSources}>
                   {message.sources.map((source) => (
@@ -2034,7 +2446,9 @@ function Mrf({
   busy: boolean;
   currentTime: number;
 }) {
-  const [tab, setTab] = useState<"decompose" | "recycle" | "inventory">("decompose");
+  const [tab, setTab] = useState<
+    "decompose" | "recycle" | "upgrade" | "inventory"
+  >("decompose");
   const guideBySource = team.mrfActionGuide ?? {};
   const rawBatches = team.wasteSources.filter(
     (source: any) => source.status === "at_mrf",
@@ -2060,6 +2474,14 @@ function Mrf({
           type="button"
         >
           Recycle
+        </button>
+        <button
+          aria-selected={tab === "upgrade"}
+          onClick={() => setTab("upgrade")}
+          role="tab"
+          type="button"
+        >
+          Upgrade quality
         </button>
         <button
           aria-selected={tab === "inventory"}
@@ -2183,6 +2605,14 @@ function Mrf({
               <p className="muted">No separated materials are waiting for recycling.</p>
             )}
         </div>
+      ) : tab === "upgrade" ? (
+        <QualityUpgradePanel
+          busy={busy}
+          currentTime={currentTime}
+          gameId={gameId}
+          send={send}
+          team={team}
+        />
       ) : (
         <RoleInventoryPanel
           busy={busy}
@@ -2196,6 +2626,115 @@ function Mrf({
     </section>
   );
 }
+function QualityUpgradePanel({
+  team,
+  gameId,
+  send,
+  busy,
+  currentTime,
+}: {
+  team: GameSnapshot["team"];
+  gameId: string;
+  send: (path: string, payload: object, method?: string) => Promise<boolean>;
+  busy: boolean;
+  currentTime: number;
+}) {
+  const [material, setMaterial] = useState<Material>("paper");
+  const [quantityKg, setQuantityKg] = useState(100);
+  const availableKg = Math.max(
+    0,
+    Math.min(
+      team.roleInventories.mrf[material].C -
+        (team.roleInventories.mrf[material].lockedC ?? 0),
+      team.inventory[material].C - (team.inventory[material].lockedC ?? 0),
+    ),
+  );
+  const validQuantity =
+    Number.isInteger(quantityKg) &&
+    quantityKg >= 2 &&
+    quantityKg <= Math.min(10_000, availableKg);
+  const outputKg = Math.floor(
+    (Math.max(0, quantityKg) * QUALITY_UPGRADE.recoveryRateBasisPoints) / 10_000,
+  );
+  const costCents = Math.max(0, quantityKg) * QUALITY_UPGRADE.costCentsPerKg;
+  const co2Kg = Math.round(
+    (Math.max(0, quantityKg) * QUALITY_UPGRADE.co2MilliKgPerKg) / 1000,
+  );
+  const activeUpgrades = team.activeQualityUpgrades ?? [];
+  return (
+    <div className={styles.queue} role="tabpanel">
+      <article className={styles.mrfBatchCard}>
+        <strong className={styles.batchTitle}>
+          <img src={asset("material-bale")} alt="" />
+          Upgrade Grade C material
+        </strong>
+        <p className={styles.recyclePrompt}>
+          Re-sort and clean MRF-held Grade C stock into less, project-eligible Grade B material.
+        </p>
+        <div className={styles.purchase}>
+          <label>
+            Grade C material
+            <select
+              onChange={(event) => setMaterial(event.target.value as Material)}
+              value={material}
+            >
+              {materials.map((item) => (
+                <option key={item} value={item}>
+                  {item} ({formatTons(Math.max(0, team.roleInventories.mrf[item].C - (team.roleInventories.mrf[item].lockedC ?? 0)))})
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Input kg
+            <input
+              max={Math.min(10_000, availableKg)}
+              min={2}
+              onChange={(event) => setQuantityKg(Number(event.target.value))}
+              step={1}
+              type="number"
+              value={quantityKg}
+            />
+          </label>
+          <div className={styles.mrfGuide}>
+            <strong>{formatTons(outputKg)} Grade B output</strong>
+            <span>{formatTons(Math.max(0, quantityKg - outputKg))} removed as residue</span>
+            <span>{QUALITY_UPGRADE.durationMs / 1000}s · {formatMoney(costCents)} · +{formatTons(co2Kg)}</span>
+          </div>
+          <button
+            disabled={busy || !validQuantity || team.walletCents < costCents}
+            onClick={() =>
+              void send(`/v1/games/${gameId}/mrf/quality-upgrades`, {
+                expectedTeamRevision: team.revision,
+                payload: {
+                  materialType: material,
+                  inputGrade: "C",
+                  targetGrade: "B",
+                  quantityKg,
+                },
+              })
+            }
+            type="button"
+          >
+            Upgrade Grade C to Grade B
+          </button>
+        </div>
+        {!validQuantity && (
+          <small>Choose 2 kg or more of unlocked Grade C stock held by the MRF.</small>
+        )}
+        {team.walletCents < costCents && <small>Team wallet cannot cover this upgrade.</small>}
+      </article>
+      {activeUpgrades.map((upgrade) => (
+        <p className={styles.processingStatus} key={upgrade._id}>
+          Upgrading {formatTons(upgrade.result.inputKg)} Grade C {upgrade.materialType} to {formatTons(upgrade.result.outputKg)} Grade B in {formatCountdown(upgrade.dueAt, currentTime)}.
+        </p>
+      ))}
+      {activeUpgrades.length === 0 && !materials.some((item) => team.roleInventories.mrf[item].C > 0) && (
+        <p className="muted">No MRF-held Grade C material is available for quality upgrading.</p>
+      )}
+    </div>
+  );
+}
 function Broker({
   team,
   gameId,
@@ -2204,6 +2743,7 @@ function Broker({
   send,
   busy,
   currentTime,
+  onExternalPurchaseConfirmed,
 }: {
   team: GameSnapshot["team"];
   gameId: string;
@@ -2212,14 +2752,19 @@ function Broker({
   send: (path: string, payload: object, method?: string) => Promise<boolean>;
   busy: boolean;
   currentTime: number;
+  onExternalPurchaseConfirmed: (material: Material, quantityKg: number) => void;
 }) {
   const [workspaceTab, setWorkspaceTab] = useState<"operations" | "inventory">(
     "operations",
   );
-  const [tab, setTab] = useState<"trade" | "external">("trade");
+  const [tab, setTab] = useState<"send" | "incoming" | "external">("send");
   const [material, setMaterial] = useState<Material>("metal");
   const [quantity, setQuantity] = useState(1000);
   const [requestedMaterial, setRequestedMaterial] = useState<Material>("paper");
+  const [offerGrade, setOfferGrade] = useState<Grade>("B");
+  const [requestedGrade, setRequestedGrade] = useState<Grade>("B");
+  const [offerQuantity, setOfferQuantity] = useState(1000);
+  const [requestedQuantity, setRequestedQuantity] = useState(1000);
   const [recipientTeamId, setRecipientTeamId] = useState("");
   const [deliveryMode, setDeliveryMode] = useState<"standard" | "low-carbon">(
     "standard",
@@ -2235,16 +2780,50 @@ function Broker({
   );
   const availableOfferKg = Math.max(
     0,
-    team.roleInventories.broker[material].B -
-      (team.roleInventories.broker[material].lockedB ?? 0),
+    team.roleInventories.broker[material][offerGrade] -
+      (team.roleInventories.broker[material][
+        `locked${offerGrade}` as "lockedA" | "lockedB" | "lockedC"
+      ] ?? 0),
   );
   const validQuantity =
     Number.isFinite(quantity) && quantity >= 100 && quantity % 100 === 0;
+  const validOfferQuantity =
+    Number.isFinite(offerQuantity) &&
+    offerQuantity >= 100 &&
+    offerQuantity % 100 === 0;
+  const validRequestedQuantity =
+    Number.isFinite(requestedQuantity) &&
+    requestedQuantity >= 100 &&
+    requestedQuantity % 100 === 0;
   const orderedTrades = [...(trades ?? [])].sort(
     (left: any, right: any) =>
       (right.deliveryDueAt ?? right.expiresAt ?? 0) -
       (left.deliveryDueAt ?? left.expiresAt ?? 0),
   );
+  const outgoingTrades = orderedTrades.filter(
+    (offer: any) => offer.offeringTeamId === team.teamId,
+  );
+  const incomingTrades = orderedTrades.filter(
+    (offer: any) => offer.recipientTeamId === team.teamId && offer.status === "open",
+  );
+  const teamById = new Map(
+    teams.map((candidate: any) => [String(candidate.teamId), candidate]),
+  );
+  const availableForRequest = (materialType: Material, grade: Grade) =>
+    Math.max(
+      0,
+      team.roleInventories.broker[materialType][grade] -
+        (team.roleInventories.broker[materialType][
+          `locked${grade}` as "lockedA" | "lockedB" | "lockedC"
+        ] ?? 0),
+    );
+  const purchaseExternalMaterial = async () => {
+    const confirmed = await send(`/v1/games/${gameId}/broker/external-purchases`, {
+      expectedTeamRevision: team.revision,
+      payload: { materialType: material, quantityKg: quantity },
+    });
+    if (confirmed) onExternalPurchaseConfirmed(material, quantity);
+  };
 
   return (
     <section className={styles.roleWorkspace}>
@@ -2253,12 +2832,20 @@ function Broker({
     <section className={styles.overlaySection} role="tabpanel">
       <div className={styles.brokerTabs} role="tablist" aria-label="Broker actions">
         <button
-          aria-selected={tab === "trade"}
+          aria-selected={tab === "send"}
           role="tab"
           type="button"
-          onClick={() => setTab("trade")}
+          onClick={() => setTab("send")}
         >
-          Team trade
+          Send Trade Offer
+        </button>
+        <button
+          aria-selected={tab === "incoming"}
+          role="tab"
+          type="button"
+          onClick={() => setTab("incoming")}
+        >
+          Incoming Trade Offer{incomingTrades.length ? ` (${incomingTrades.length})` : ""}
         </button>
         <button
           aria-selected={tab === "external"}
@@ -2272,6 +2859,12 @@ function Broker({
 
       {tab === "external" && (
         <div className={styles.purchase}>
+          <div className={styles.externalPurchaseGrade}>
+            <strong>All external-market material arrives as Grade B</strong>
+            <span>
+              Grade B stock is added to the Broker allocation and is eligible for standard project requirements.
+            </span>
+          </div>
           <label>
             Material
             <select
@@ -2298,12 +2891,7 @@ function Broker({
           </label>
           <button
             disabled={busy || !validQuantity}
-            onClick={() =>
-              void send(`/v1/games/${gameId}/broker/external-purchases`, {
-                expectedTeamRevision: team.revision,
-                payload: { materialType: material, quantityKg: quantity },
-              })
-            }
+            onClick={() => void purchaseExternalMaterial()}
           >
             Purchase {formatTons(quantity)} for {formatMoney(externalCostCents)} ·
             +{formatTons(externalCo2Kg)} CO2e
@@ -2311,7 +2899,7 @@ function Broker({
         </div>
       )}
 
-      {tab === "trade" && (
+      {tab === "send" && (
         <section className={styles.tradeBoard} aria-label="Broker trade board">
           <div>
             <h3>Propose a team trade</h3>
@@ -2332,53 +2920,92 @@ function Broker({
             </select>
           </label>
           <label>
-            Delivery method
+            Trade mode
             <select
               value={deliveryMode}
               onChange={(event) =>
                 setDeliveryMode(event.target.value as "standard" | "low-carbon")
               }
             >
-              <option value="standard">Standard: 8s · $40 · 0.35 tCO2e</option>
+              <option value="standard">Standard: instant · $40 · 0.35 tCO2e</option>
               <option value="low-carbon">
-                Low carbon: 15s · $25 · 0.15 tCO2e
+                Low carbon: instant · $25 · 0.15 tCO2e
               </option>
             </select>
           </label>
           <label>
-            You offer
+            You offer material and grade
             <select
-              value={material}
-              onChange={(event) => setMaterial(event.target.value as Material)}
+              value={`${material}:${offerGrade}`}
+              onChange={(event) => {
+                const [nextMaterial, nextGrade] = event.target.value.split(":") as [
+                  Material,
+                  Grade,
+                ];
+                setMaterial(nextMaterial);
+                setOfferGrade(nextGrade);
+              }}
             >
-              {materials.map((item) => (
-                <option value={item} key={item}>
-                  {item} grade B
-                </option>
-              ))}
+              {materials.flatMap((item) =>
+                grades.map((grade) => (
+                  <option value={`${item}:${grade}`} key={`${item}:${grade}`}>
+                    {item} · Grade {grade}
+                  </option>
+                )),
+              )}
             </select>
           </label>
           <label>
-            You request
+            Offer amount kg
+            <input
+              type="number"
+              min="100"
+              max="10000"
+              step="100"
+              value={offerQuantity}
+              onChange={(event) => setOfferQuantity(Number(event.target.value))}
+            />
+          </label>
+          <label>
+            You request material and grade
             <select
-              value={requestedMaterial}
-              onChange={(event) =>
-                setRequestedMaterial(event.target.value as Material)
-              }
+              value={`${requestedMaterial}:${requestedGrade}`}
+              onChange={(event) => {
+                const [nextMaterial, nextGrade] = event.target.value.split(":") as [
+                  Material,
+                  Grade,
+                ];
+                setRequestedMaterial(nextMaterial);
+                setRequestedGrade(nextGrade);
+              }}
             >
-              {materials.map((item) => (
-                <option value={item} key={item}>
-                  {item} minimum grade B
-                </option>
-              ))}
+              {materials.flatMap((item) =>
+                grades.map((grade) => (
+                  <option value={`${item}:${grade}`} key={`${item}:${grade}`}>
+                    {item} · Grade {grade}
+                  </option>
+                )),
+              )}
             </select>
+          </label>
+          <label>
+            Request amount kg
+            <input
+              type="number"
+              min="100"
+              max="10000"
+              step="100"
+              value={requestedQuantity}
+              onChange={(event) => setRequestedQuantity(Number(event.target.value))}
+            />
           </label>
           <button
             disabled={
               busy ||
               !recipientTeamId ||
-              !validQuantity ||
-              availableOfferKg < quantity
+              !validOfferQuantity ||
+              !validRequestedQuantity ||
+              availableOfferKg < offerQuantity
             }
             onClick={() =>
               void send(`/v1/games/${gameId}/broker/trades`, {
@@ -2390,8 +3017,8 @@ function Broker({
                       materials: [
                         {
                           materialType: material,
-                          grade: "B",
-                          quantityKg: quantity,
+                          grade: offerGrade,
+                          quantityKg: offerQuantity,
                         },
                       ],
                       cashCents: 0,
@@ -2400,8 +3027,8 @@ function Broker({
                       materials: [
                         {
                           materialType: requestedMaterial,
-                          minimumGrade: "B",
-                          quantityKg: quantity,
+                          grade: requestedGrade,
+                          quantityKg: requestedQuantity,
                         },
                       ],
                       cashCents: 0,
@@ -2414,26 +3041,21 @@ function Broker({
           >
             Send trade offer
           </button>
-          {recipientTeamId && availableOfferKg < quantity && (
+          {recipientTeamId && availableOfferKg < offerQuantity && (
             <p className="muted">
-              You need {formatTons(quantity - availableOfferKg)} more grade B {material}
+              You need {formatTons(offerQuantity - availableOfferKg)} more Grade {offerGrade} {material}
               to make this offer.
             </p>
           )}
           <div className={styles.tradeList}>
-            {orderedTrades.map((offer: any) => {
-              const incoming = offer.recipientTeamId === team.teamId;
+            {outgoingTrades.map((offer: any) => {
               const offered = offer.terms.offered.materials[0];
               const requested = offer.terms.requested.materials[0];
               const etaTarget =
-                offer.status === "in-transit"
-                  ? offer.deliveryDueAt
-                  : offer.status === "open"
-                    ? offer.expiresAt
-                    : undefined;
+                offer.status === "open" ? offer.expiresAt : undefined;
               return (
                 <article key={offer._id}>
-                  <strong>{incoming ? "Incoming offer" : "Your offer"}</strong>
+                  <strong>Your offer</strong>
                   <span>
                     {formatTons(offered.quantityKg)} {offered.materialType} for{" "}
                     {formatTons(requested.quantityKg)} {requested.materialType}
@@ -2441,41 +3063,10 @@ function Broker({
                   <span>{offer.status}</span>
                   {etaTarget && (
                     <span className="muted">
-                      {offer.status === "in-transit" ? "ETA" : "Expires"}: {" "}
-                      {formatCountdown(etaTarget, currentTime)}
+                      Expires: {formatCountdown(etaTarget, currentTime)}
                     </span>
                   )}
-                  {offer.status === "open" && incoming && (
-                    <div>
-                      <button
-                        disabled={busy}
-                        onClick={() =>
-                          void send(
-                            `/v1/games/${gameId}/broker/trades/${offer._id}/accept`,
-                            {
-                              payload: {},
-                            },
-                          )
-                        }
-                      >
-                        Accept
-                      </button>
-                      <button
-                        disabled={busy}
-                        onClick={() =>
-                          void send(
-                            `/v1/games/${gameId}/broker/trades/${offer._id}/reject`,
-                            {
-                              payload: {},
-                            },
-                          )
-                        }
-                      >
-                        Reject
-                      </button>
-                    </div>
-                  )}
-                  {offer.status === "open" && !incoming && (
+                  {offer.status === "open" && (
                     <button
                       disabled={busy}
                       onClick={() =>
@@ -2493,7 +3084,83 @@ function Broker({
                 </article>
               );
             })}
+            {outgoingTrades.length === 0 && (
+              <p className="muted">No offers sent yet.</p>
+            )}
           </div>
+        </section>
+      )}
+      {tab === "incoming" && (
+        <section className={styles.incomingTradeBoard} aria-label="Incoming trade offers">
+          <header>
+            <span>Broker decisions</span>
+            <h3>Incoming Trade Offer</h3>
+          </header>
+          {incomingTrades.map((offer: any) => {
+            const sender = teamById.get(String(offer.offeringTeamId));
+            const offered = offer.terms.offered.materials[0];
+            const requested = offer.terms.requested.materials[0];
+            const availableRequestedKg = availableForRequest(
+              requested.materialType,
+              requested.grade,
+            );
+            const canAccept = availableRequestedKg >= requested.quantityKg;
+            return (
+              <article className={styles.incomingTradeCard} key={offer._id}>
+                <div className={styles.incomingTradeHeading}>
+                  <span>From City {sender?.citySlot ?? "?"}{sender?.name ? ` · ${sender.name}` : ""}</span>
+                  <strong>Expires {formatCountdown(offer.expiresAt, currentTime)}</strong>
+                </div>
+                <div className={styles.incomingTradeTerms}>
+                  <div>
+                    <span>They offer</span>
+                    <strong>{formatTons(offered.quantityKg)} {offered.materialType} · Grade {offered.grade}</strong>
+                  </div>
+                  <div>
+                    <span>They request</span>
+                    <strong>{formatTons(requested.quantityKg)} {requested.materialType} · Grade {requested.grade}</strong>
+                  </div>
+                </div>
+                <div className={styles.incomingTradeMeta}>
+                  <span>{offer.terms.deliveryMode === "low-carbon" ? "Low carbon trade" : "Standard trade"}</span>
+                  <span>You can provide {formatTons(availableRequestedKg)}</span>
+                </div>
+                <div className={styles.incomingTradeActions}>
+                  <button
+                    disabled={!canAccept}
+                    onClick={() =>
+                      void send(
+                        `/v1/games/${gameId}/broker/trades/${offer._id}/accept`,
+                        { payload: {} },
+                      )
+                    }
+                    type="button"
+                  >
+                    Accept
+                  </button>
+                  <button
+                    onClick={() =>
+                      void send(
+                        `/v1/games/${gameId}/broker/trades/${offer._id}/reject`,
+                        { payload: {} },
+                      )
+                    }
+                    type="button"
+                  >
+                    Decline
+                  </button>
+                </div>
+                {!canAccept && (
+                  <p className={styles.tradeMaterialWarning}>
+                    Not enough Grade {requested.grade} {requested.materialType} for this trade.
+                  </p>
+                )}
+              </article>
+            );
+          })}
+          {incomingTrades.length === 0 && (
+            <p className="muted">No incoming trade offers right now.</p>
+          )}
         </section>
       )}
     </section>

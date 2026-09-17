@@ -24,6 +24,7 @@ export interface GameSnapshot {
     id: string;
     status: string;
     serverTime: number;
+    activeStartedAt?: number;
     activeEndsAt?: number;
     finalizationEndsAt?: number;
     revision: number;
@@ -46,6 +47,7 @@ export interface GameSnapshot {
     roleInventories: RoleInventories;
     wasteSources: WasteSource[];
     activeJobs: ProcessJob[];
+    activeQualityUpgrades?: QualityUpgradeJob[];
     transports: Transport[];
     materialTransfers: MaterialTransfer[];
     currentHealthMission: HealthMission | null;
@@ -85,6 +87,27 @@ export interface ProcessJob {
   result?: ProcessingResult;
   dueAt: number;
   status: "processing";
+}
+
+export interface QualityUpgradeJob {
+  _id: string;
+  materialType: Material;
+  inputGrade: "C";
+  targetGrade: "B";
+  dueAt: number;
+  status: "processing";
+  result: {
+    material: Material;
+    inputGrade: "C";
+    targetGrade: "B";
+    inputKg: number;
+    outputKg: number;
+    residueKg: number;
+    durationMs: number;
+    costCents: number;
+    co2Kg: number;
+    recoveryRateBasisPoints: number;
+  };
 }
 
 export interface ProcessingResult {
@@ -135,7 +158,6 @@ export interface HealthMission {
 export interface TradeMaterialLine {
   materialType: Material;
   grade?: "A" | "B" | "C";
-  minimumGrade?: "A" | "B" | "C";
   quantityKg: number;
 }
 

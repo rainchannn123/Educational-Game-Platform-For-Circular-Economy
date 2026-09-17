@@ -58,7 +58,7 @@ describe("durable scheduler calculations", () => {
     expect(wasteSpawnIntervalMs(42, 4, 0, 10_000, 30_000)).not.toBe(intervals[0]);
   });
 
-  test("schedules the first role quiz at 30 seconds and then every minute", () => {
+  test("schedules the first role quiz at 30 seconds and then every two minutes", () => {
     expect(
       dueScheduleSlots(
         -1,
@@ -78,7 +78,7 @@ describe("durable scheduler calculations", () => {
     expect(
       dueScheduleSlots(
         0,
-        90_000,
+        150_000,
         STANDARD_SCENARIO.firstHealthMissionMs,
         STANDARD_SCENARIO.healthMissionMs,
       ),

@@ -120,6 +120,16 @@ export const decomposeWasteSchema = z.object({
   expectedTeamRevision: z.number().int().nonnegative(),
   payload: z.object({ wasteSourceId: z.string().min(1) }),
 });
+export const qualityUpgradeSchema = z.object({
+  commandId: commandIdSchema,
+  expectedTeamRevision: z.number().int().nonnegative(),
+  payload: z.object({
+    materialType: materialSchema,
+    inputGrade: z.literal("C"),
+    targetGrade: z.literal("B"),
+    quantityKg: z.number().int().min(2).max(10_000),
+  }),
+});
 export const materialTransferSchema = z.object({
   commandId: commandIdSchema,
   expectedTeamRevision: z.number().int().nonnegative(),
@@ -182,7 +192,7 @@ export const tradeTermsSchema = z.object({
       .array(
         z.object({
           materialType: materialSchema,
-          minimumGrade: gradeSchema,
+          grade: gradeSchema,
           quantityKg: positiveHundredKgSchema,
         }),
       )
@@ -212,6 +222,8 @@ export const errorMessages: Record<string, string> = {
     "The MRF queue is full. Process or wait for an incoming batch first.",
   PROCESSING_METHOD_INCOMPATIBLE:
     "This recycling method cannot safely process the selected batch.",
+  QUALITY_UPGRADE_UNAVAILABLE:
+    "Your MRF does not hold enough unlocked Grade C material for this quality upgrade.",
   MATERIAL_TRANSFER_INVALID:
     "Choose available material and a different teammate role.",
   MATERIAL_TRANSFER_UNAVAILABLE:

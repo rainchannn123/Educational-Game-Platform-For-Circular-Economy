@@ -8,19 +8,19 @@ Set these in the repository-root `.env` file for local development, and use your
 
 ```dotenv
 CHATBOT_ENABLED=true
-CHATBOT_PROVIDER=azure-foundry
-CHATBOT_ENDPOINT=https://your-foundry-inference-host
+CHATBOT_PROVIDER=openai
+CHATBOT_ENDPOINT=https://your-foundry-inference-host/openai/v1
 CHATBOT_API_KEY=replace-with-your-secret-key
 CHATBOT_MODEL_NAME=your-deepseek-deployment-or-model-name
 ```
 
-`CHATBOT_ENDPOINT` is the Azure Foundry inference host/base URL, not a browser-facing value. `CHATBOT_MODEL_NAME` must match the DeepSeek model deployment or model name accepted by that endpoint.
+`CHATBOT_ENDPOINT` is the Azure Foundry inference base URL, not a browser-facing value. For your current endpoint format, use `https://your-resource.services.ai.azure.com/openai/v1`; the backend appends `/chat/completions` exactly once. `CHATBOT_MODEL_NAME` must match the DeepSeek model deployment or model name accepted by that endpoint.
 
 ## Optional Values
 
 ```dotenv
-# Default: /openai/v1/chat/completions
-CHATBOT_API_PATH=/openai/v1/chat/completions
+# Default: /chat/completions
+CHATBOT_API_PATH=/chat/completions
 
 # Set only when your Foundry endpoint requires an API version query parameter.
 CHATBOT_API_VERSION=2024-05-01-preview
@@ -28,6 +28,9 @@ CHATBOT_API_VERSION=2024-05-01-preview
 # Defaults: 12000 and 450
 CHATBOT_TIMEOUT_MS=12000
 CHATBOT_MAX_TOKENS=450
+
+# Default: auto. Azure *.services.ai.azure.com hosts use api-key automatically.
+CHATBOT_AUTH_MODE=auto
 
 # Optional custom policy/instruction. The platform’s safety rules remain in force.
 CHATBOT_SYSTEM_PROMPT="You are a concise learning assistant for Clash of the Cities- Mission Net Zero."

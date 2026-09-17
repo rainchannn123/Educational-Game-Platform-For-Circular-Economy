@@ -7,10 +7,10 @@ type ProviderResponse = {
   }>;
 };
 
-const completionUrl = (env: Env): string => {
+export const completionUrl = (env: Env): string => {
   const endpoint = env.CHATBOT_ENDPOINT;
   if (!endpoint) throw new ChatbotUnavailableError();
-  const path = env.CHATBOT_API_PATH;
+  const path = env.CHATBOT_API_PATH || "/chat/completions";
   const url = path.startsWith("http")
     ? new URL(path)
     : new URL(`${endpoint.replace(/\/$/, "")}${path}`);
@@ -36,12 +36,16 @@ export async function generateAzureFoundryReply(
 ): Promise<string> {
   if (
     !env.CHATBOT_ENABLED ||
-    env.CHATBOT_PROVIDER !== "azure-foundry" ||
+    !["openai", "azure-foundry"].includes(env.CHATBOT_PROVIDER) ||
     !env.CHATBOT_API_KEY ||
-    !env.CHATBOT_MODEL_NAME
+    !(env.CHATBOT_MODEL_NAME || env.MODEL_NAME)
   )
     throw new ChatbotUnavailableError();
 
+  const usesAzureApiKey =
+    env.CHATBOT_AUTH_MODE === "api-key" ||
+    (env.CHATBOT_AUTH_MODE === "auto" &&
+      new URL(env.CHATBOT_ENDPOINT!).hostname.endsWith(".services.ai.azure.com"));
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), env.CHATBOT_TIMEOUT_MS);
   try {
@@ -49,10 +53,12 @@ export async function generateAzureFoundryReply(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "api-key": env.CHATBOT_API_KEY,
+        ...(usesAzureApiKey
+          ? { "api-key": env.CHATBOT_API_KEY }
+          : { Authorization: `Bearer ${env.CHATBOT_API_KEY}` }),
       },
       body: JSON.stringify({
-        model: env.CHATBOT_MODEL_NAME,
+        model: env.CHATBOT_MODEL_NAME || env.MODEL_NAME,
         messages,
         max_tokens: env.CHATBOT_MAX_TOKENS,
         temperature: 0.2,

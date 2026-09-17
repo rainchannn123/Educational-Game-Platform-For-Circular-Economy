@@ -14,8 +14,11 @@ import {
   GameProject,
   GameTeamState,
   MaterialTransfer,
+  OutboxEvent,
   ProcessJob,
+  QualityUpgradeJob,
   Team,
+  TradeOffer,
   Transport,
   User,
   WasteSource,
@@ -549,8 +552,38 @@ describe("authoritative game safety", () => {
       gameId: String(game._id),
       key: `project-win:${project._id}`,
     }).lean();
-    expect(announcement?.message).toContain(`City 1 wins the ${template.title} project`);
-    expect(announcement?.message).toContain("revenue &");
+    expect(announcement).toMatchObject({
+      key: `project-win:${project._id}`,
+      type: "project-win",
+      message: `City Municipality Team completes the Project ${template.title}, gaining $3,200 revenue & -1.2 t CO2e!!`,
+      payload: {
+        projectId: String(project._id),
+        projectTemplateId: template.id,
+        winnerTeamId: String(team._id),
+        winnerCity: "City Municipality Team",
+        winnerCityName: "Municipality Team",
+        winnerCitySlot: 1,
+        projectName: template.title,
+        revenueCents: template.grossRevenueCents,
+        grossRevenueCents: template.grossRevenueCents,
+        netRevenueCents: template.grossRevenueCents,
+        multiplierBasisPoints: 10_000,
+        co2ImpactKg: template.co2ImpactKg,
+      },
+    });
+    const announcementOutbox = await OutboxEvent.findOne({
+      gameId: String(game._id),
+      eventType: "announcement.created",
+    }).lean();
+    expect(announcementOutbox).toMatchObject({
+      target: `game:${game._id}`,
+      payload: {
+        announcement: expect.objectContaining({
+          key: `project-win:${project._id}`,
+          message: announcement?.message,
+        }),
+      },
+    });
     const announcementSnapshot = await request(app)
       .get(`/v1/games/${game._id}/snapshot`)
       .set("authorization", `Bearer ${token}`);
@@ -558,6 +591,7 @@ describe("authoritative game safety", () => {
       expect.objectContaining({
         key: `project-win:${project._id}`,
         type: "project-win",
+        message: announcement?.message,
       }),
     ]);
     const persistedTeam = await GameTeamState.findOne({
@@ -740,20 +774,36 @@ describe("authoritative game safety", () => {
     expect(await ProcessJob.countDocuments({ gameId: String(game._id) })).toBe(0);
 
     const paperStream = streams.find((stream: any) => stream.compositionKg.paper > 0)!;
-    const response = await request(app)
-      .post(`/v1/games/${game._id}/mrf/processes`)
-      .set("authorization", `Bearer ${token}`)
-      .set("idempotency-key", "00000000-0000-4000-8000-000000000043")
-      .send({
-        commandId: "00000000-0000-4000-8000-000000000043",
-        expectedTeamRevision: 1,
-        payload: {
-          wasteSourceId: String(paperStream._id),
-          methodId: "paper-hydropulp-deink",
-        },
-      });
+    const plasticStream = streams.find((stream: any) => stream.compositionKg.plastic > 0)!;
+    const [response, plasticResponse] = await Promise.all([
+      request(app)
+        .post(`/v1/games/${game._id}/mrf/processes`)
+        .set("authorization", `Bearer ${token}`)
+        .set("idempotency-key", "00000000-0000-4000-8000-000000000043")
+        .send({
+          commandId: "00000000-0000-4000-8000-000000000043",
+          expectedTeamRevision: 1,
+          payload: {
+            wasteSourceId: String(paperStream._id),
+            methodId: "paper-hydropulp-deink",
+          },
+        }),
+      request(app)
+        .post(`/v1/games/${game._id}/mrf/processes`)
+        .set("authorization", `Bearer ${token}`)
+        .set("idempotency-key", "00000000-0000-4000-8000-000000000044")
+        .send({
+          commandId: "00000000-0000-4000-8000-000000000044",
+          expectedTeamRevision: 1,
+          payload: {
+            wasteSourceId: String(plasticStream._id),
+            methodId: "plastic-sort-pelletize",
+          },
+        }),
+    ]);
 
     expect(response.status).toBe(200);
+    expect(plasticResponse.status).toBe(200);
     const job = await ProcessJob.findOne({
       gameId: String(game._id),
       wasteSourceId: String(paperStream._id),
@@ -769,8 +819,195 @@ describe("authoritative game safety", () => {
     expect(await WasteSource.findById(paperStream._id).lean()).toMatchObject({
       status: "processing",
     });
-    expect(await WasteSource.findById(streams[1]!._id).lean()).toMatchObject({
-      status: "held",
+    expect(await WasteSource.findById(plasticStream._id).lean()).toMatchObject({
+      status: "processing",
+    });
+    expect(await ProcessJob.countDocuments({ gameId: String(game._id) })).toBe(2);
+  });
+
+  test("reserves MRF Grade C stock in a durable quality-upgrade job", async () => {
+    const stamp = Date.now() + 6;
+    const user = await User.create({
+      displayName: "Quality MRF",
+      email: `quality-mrf-${stamp}@example.test`,
+      passwordHash: "not-used",
+    });
+    const team = await Team.create({
+      name: "Quality Team",
+      inviteCode: `Q${String(stamp).slice(-5)}`,
+      leaderUserId: String(user._id),
+      members: [
+        {
+          userId: String(user._id),
+          displayName: "Quality MRF",
+          role: "mrf",
+          ready: true,
+        },
+      ],
+      status: "in-room",
+    });
+    const game = await Game.create({
+      roomId: `room-quality-${stamp}`,
+      status: "active",
+      startedAt: stamp,
+      activeEndsAt: stamp + 180_000,
+      participantTeamIds: [String(team._id)],
+    });
+    const state = defaultTeam(String(team._id), 1);
+    state.inventory.plastic.C = 1_000;
+    state.roleInventories.mrf.plastic.C = 1_000;
+    await GameTeamState.create({
+      gameId: String(game._id),
+      teamId: String(team._id),
+      ...state,
+      memberRoles: { mrf: String(user._id) },
+    });
+    const app = createApp(env);
+    const token = signToken({ userId: String(user._id), roles: ["student"] }, env);
+    const body = {
+      commandId: "00000000-0000-4000-8000-000000000047",
+      expectedTeamRevision: 0,
+      payload: {
+        materialType: "plastic",
+        inputGrade: "C",
+        targetGrade: "B",
+        quantityKg: 1_000,
+      },
+    };
+    const [first, duplicate] = await Promise.all([
+      request(app)
+        .post(`/v1/games/${game._id}/mrf/quality-upgrades`)
+        .set("authorization", `Bearer ${token}`)
+        .set("idempotency-key", body.commandId)
+        .send(body),
+      request(app)
+        .post(`/v1/games/${game._id}/mrf/quality-upgrades`)
+        .set("authorization", `Bearer ${token}`)
+        .set("idempotency-key", body.commandId)
+        .send(body),
+    ]);
+    expect(first.status).toBe(200);
+    expect(duplicate.status).toBe(200);
+    expect(first.body.data.result.qualityUpgrade._id).toBe(
+      duplicate.body.data.result.qualityUpgrade._id,
+    );
+    const updated = await GameTeamState.findOne({
+      gameId: String(game._id),
+      teamId: String(team._id),
+    }).lean();
+    expect(updated).toMatchObject({
+      revision: 1,
+      totalCO2Kg: 90,
+      inventory: { plastic: { C: 0, B: 0 } },
+      roleInventories: { mrf: { plastic: { C: 0, B: 0 } } },
+    });
+    expect(updated?.walletCents).toBe(state.walletCents - 5_000);
+    expect(await QualityUpgradeJob.findOne({ gameId: String(game._id) }).lean()).toMatchObject({
+      materialType: "plastic",
+      inputGrade: "C",
+      targetGrade: "B",
+      status: "processing",
+      result: expect.objectContaining({ inputKg: 1_000, outputKg: 700 }),
+    });
+    const snapshot = await request(app)
+      .get(`/v1/games/${game._id}/snapshot`)
+      .set("authorization", `Bearer ${token}`);
+    expect(snapshot.status).toBe(200);
+    expect(snapshot.body.data.team.activeQualityUpgrades).toEqual([
+      expect.objectContaining({ materialType: "plastic", status: "processing" }),
+    ]);
+  });
+
+  test("settles an accepted Broker trade immediately for both teams", async () => {
+    const stamp = Date.now() + 7;
+    const [offeringUser, recipientUser] = await Promise.all([
+      User.create({
+        displayName: "Offering Broker",
+        email: `offering-broker-${stamp}@example.test`,
+        passwordHash: "not-used",
+      }),
+      User.create({
+        displayName: "Recipient Broker",
+        email: `recipient-broker-${stamp}@example.test`,
+        passwordHash: "not-used",
+      }),
+    ]);
+    const [offeringTeam, recipientTeam] = await Promise.all([
+      Team.create({
+        name: "Metal City",
+        inviteCode: `M${String(stamp).slice(-5)}`,
+        leaderUserId: String(offeringUser._id),
+        members: [{ userId: String(offeringUser._id), displayName: "Offering Broker", role: "broker", ready: true }],
+        status: "in-room",
+      }),
+      Team.create({
+        name: "Paper City",
+        inviteCode: `P${String(stamp).slice(-5)}`,
+        leaderUserId: String(recipientUser._id),
+        members: [{ userId: String(recipientUser._id), displayName: "Recipient Broker", role: "broker", ready: true }],
+        status: "in-room",
+      }),
+    ]);
+    const game = await Game.create({
+      roomId: `room-trade-${stamp}`,
+      status: "active",
+      startedAt: stamp,
+      activeEndsAt: stamp + 180_000,
+      participantTeamIds: [String(offeringTeam._id), String(recipientTeam._id)],
+    });
+    const offeringState = defaultTeam(String(offeringTeam._id), 1);
+    offeringState.inventory.metal.B = 100;
+    offeringState.roleInventories.broker.metal.B = 100;
+    const recipientState = defaultTeam(String(recipientTeam._id), 2);
+    recipientState.inventory.paper.B = 200;
+    recipientState.roleInventories.broker.paper.B = 200;
+    await GameTeamState.insertMany([
+      { gameId: String(game._id), teamId: String(offeringTeam._id), ...offeringState, memberRoles: { broker: String(offeringUser._id) } },
+      { gameId: String(game._id), teamId: String(recipientTeam._id), ...recipientState, memberRoles: { broker: String(recipientUser._id) } },
+    ]);
+    const app = createApp(env);
+    const offeringToken = signToken({ userId: String(offeringUser._id), roles: ["student"] }, env);
+    const recipientToken = signToken({ userId: String(recipientUser._id), roles: ["student"] }, env);
+
+    const created = await request(app)
+      .post(`/v1/games/${game._id}/broker/trades`)
+      .set("authorization", `Bearer ${offeringToken}`)
+      .set("idempotency-key", "00000000-0000-4000-8000-000000000045")
+      .send({
+        commandId: "00000000-0000-4000-8000-000000000045",
+        expectedTeamRevision: 0,
+        payload: {
+          recipientTeamId: String(recipientTeam._id),
+          terms: {
+            offered: { materials: [{ materialType: "metal", grade: "B", quantityKg: 100 }], cashCents: 0 },
+            requested: { materials: [{ materialType: "paper", grade: "B", quantityKg: 200 }], cashCents: 0 },
+            deliveryMode: "standard",
+          },
+        },
+      });
+    expect(created.status).toBe(200);
+    const offerId = created.body.data.result.offer._id;
+
+    const accepted = await request(app)
+      .post(`/v1/games/${game._id}/broker/trades/${offerId}/accept`)
+      .set("authorization", `Bearer ${recipientToken}`)
+      .set("idempotency-key", "00000000-0000-4000-8000-000000000046")
+      .send({ commandId: "00000000-0000-4000-8000-000000000046", payload: {} });
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.data.result.status).toBe("completed");
+
+    expect(await TradeOffer.findById(offerId).lean()).toMatchObject({ status: "completed" });
+    const [updatedOffering, updatedRecipient] = await Promise.all([
+      GameTeamState.findOne({ gameId: String(game._id), teamId: String(offeringTeam._id) }).lean(),
+      GameTeamState.findOne({ gameId: String(game._id), teamId: String(recipientTeam._id) }).lean(),
+    ]);
+    expect(updatedOffering).toMatchObject({
+      inventory: expect.objectContaining({ metal: expect.objectContaining({ B: 0 }), paper: expect.objectContaining({ B: 200 }) }),
+      roleInventories: expect.objectContaining({ broker: expect.objectContaining({ metal: expect.objectContaining({ B: 0 }), paper: expect.objectContaining({ B: 200 }) }) }),
+    });
+    expect(updatedRecipient).toMatchObject({
+      inventory: expect.objectContaining({ paper: expect.objectContaining({ B: 0 }), metal: expect.objectContaining({ B: 100 }) }),
+      roleInventories: expect.objectContaining({ broker: expect.objectContaining({ paper: expect.objectContaining({ B: 0 }), metal: expect.objectContaining({ B: 100 }) }) }),
     });
   });
 

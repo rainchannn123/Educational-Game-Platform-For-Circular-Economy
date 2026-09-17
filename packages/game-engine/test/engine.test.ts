@@ -7,6 +7,7 @@ import {
   calculateCo2Receipt,
   calculateCollection,
   calculateProcessing,
+  calculateQualityUpgrade,
   consumeProjectMaterials,
   defaultTeam,
   emptyInventory,
@@ -99,6 +100,20 @@ describe("deterministic game rules", () => {
     expect(result.grade).toBeNull();
     expect(result.healthDelta).toBe(-2);
   });
+  it("converts Grade C material into less Grade B material through quality upgrading", () => {
+    expect(calculateQualityUpgrade("plastic", 1_000)).toMatchObject({
+      material: "plastic",
+      inputGrade: "C",
+      targetGrade: "B",
+      inputKg: 1_000,
+      outputKg: 700,
+      residueKg: 300,
+      durationMs: 12_000,
+      costCents: 5_000,
+      co2Kg: 90,
+      recoveryRateBasisPoints: 7_000,
+    });
+  });
   it("claims from shared stock distributed across role inventories", () => {
     const team = defaultTeam("a", 1);
     const project = PROJECTS[0]!;
@@ -140,6 +155,24 @@ describe("deterministic game rules", () => {
     ).toThrow("PROJECT_REQUIREMENTS_NOT_MET");
     expect(inventory.paper.B).toBe(500);
   });
+  it("reserves Grade A material for a project's critical quality portion", () => {
+    const inventory = emptyInventory();
+    inventory.paper.A = 200;
+    inventory.paper.B = 800;
+    const required = { paper: 1_000, plastic: 0, metal: 0, glass: 0, wood: 0 };
+    const gradeARequired = { paper: 200, plastic: 0, metal: 0, glass: 0, wood: 0 };
+
+    expect(consumeProjectMaterials(inventory, required, gradeARequired).paper).toMatchObject({
+      A: 0,
+      B: 0,
+    });
+
+    const withoutGradeA = emptyInventory();
+    withoutGradeA.paper.B = 1_000;
+    expect(() =>
+      consumeProjectMaterials(withoutGradeA, required, gradeARequired),
+    ).toThrow("PROJECT_REQUIREMENTS_NOT_MET");
+  });
   it("rounds fractional-cent collection costs half up", () => {
     expect(
       calculateCollection(
@@ -164,7 +197,7 @@ describe("deterministic game rules", () => {
         },
         requested: {
           materials: [
-            { materialType: "metal", minimumGrade: "B", quantityKg: 10000 },
+            { materialType: "metal", grade: "B", quantityKg: 10000 },
           ],
           cashCents: 0,
         },
@@ -182,7 +215,7 @@ describe("deterministic game rules", () => {
           cashCents: 0,
         },
         requested: {
-          materials: [{ materialType: "metal", minimumGrade: "B", quantityKg: 100 }],
+          materials: [{ materialType: "metal", grade: "B", quantityKg: 100 }],
           cashCents: 0,
         },
         deliveryMode: "standard",

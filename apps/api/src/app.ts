@@ -23,6 +23,7 @@ import {
   materialPlanSchema,
   materialTransferSchema,
   processWasteSchema,
+  qualityUpgradeSchema,
   readinessSchema,
 } from "@circular-city/contracts";
 import {
@@ -50,6 +51,7 @@ import {
   MaterialTransfer,
   OutboxEvent,
   ProjectWork,
+  QualityUpgradeJob,
   Room,
   Team,
   TradeOffer,
@@ -798,6 +800,7 @@ export const createApp = (env: Env = readEnv()): express.Express => {
       const [
         wasteSources,
         jobs,
+        qualityUpgrades,
         mission,
         trades,
         transports,
@@ -825,6 +828,11 @@ export const createApp = (env: Env = readEnv()): express.Express => {
             status: "processing",
           })
           .lean(),
+        QualityUpgradeJob.find({
+          gameId: request.params.gameId,
+          teamId: membership.state.teamId,
+          status: "processing",
+        }).lean(),
         mongoose
           .model("HealthMission")
           .findOne({
@@ -920,6 +928,7 @@ export const createApp = (env: Env = readEnv()): express.Express => {
             id: String(game!._id),
             status: game!.status,
             serverTime: snapshotTime,
+            activeStartedAt: game!.activeStartedAt ?? game!.startedAt,
             activeEndsAt: game!.activeEndsAt,
             finalizationEndsAt: game!.finalizationEndsAt,
             revision: game!.globalRevision,
@@ -934,6 +943,7 @@ export const createApp = (env: Env = readEnv()): express.Express => {
             rewardMultiplierBasisPoints,
             wasteSources,
             activeJobs: jobs,
+            activeQualityUpgrades: qualityUpgrades,
             transports,
             materialTransfers,
             currentHealthMission: mission,
@@ -1022,6 +1032,21 @@ export const createApp = (env: Env = readEnv()): express.Express => {
         body.expectedTeamRevision,
         body.payload.wasteSourceId,
         body.payload.methodId,
+      ),
+    ),
+  );
+  app.post(
+    "/v1/games/:gameId/mrf/quality-upgrades",
+    command(qualityUpgradeSchema, (body, request) =>
+      service.startQualityUpgrade(
+        String(request.params.gameId),
+        request.principal!.userId,
+        body.commandId,
+        body.expectedTeamRevision,
+        body.payload.materialType,
+        body.payload.inputGrade,
+        body.payload.targetGrade,
+        body.payload.quantityKg,
       ),
     ),
   );
@@ -1222,7 +1247,10 @@ export const createApp = (env: Env = readEnv()): express.Express => {
   );
   app.post("/v1/games/:gameId/chatbot/messages", async (request, response) => {
     try {
-      if (!env.CHATBOT_ENABLED || env.CHATBOT_PROVIDER !== "azure-foundry")
+      if (
+        !env.CHATBOT_ENABLED ||
+        !["openai", "azure-foundry"].includes(env.CHATBOT_PROVIDER)
+      )
         throw new ChatbotUnavailableError();
       const membership = await service.member(
         request.params.gameId,

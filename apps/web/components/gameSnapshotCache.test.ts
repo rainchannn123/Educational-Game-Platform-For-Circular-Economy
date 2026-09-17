@@ -98,4 +98,51 @@ describe("selective game snapshot cache updates", () => {
     expect(next?.team.wasteSources.find((source) => source._id === "stream-2")?.status).toBe("processing");
     expect(next?.team.activeJobs.find((job) => job.wasteSourceId === "stream-2")?.methodId).toBe("landfill");
   });
+
+  it("reserves Grade C at upgrade start and credits Grade B only on completion", () => {
+    const current = snapshot();
+    current.team.inventory.plastic.C = 1_000;
+    current.team.roleInventories.mrf.plastic.C = 1_000;
+    const started = applyRealtimeSnapshotPatch(
+      current,
+      "mrf.quality-upgrade.updated",
+      {
+        qualityUpgradeId: "upgrade-1",
+        materialType: "plastic",
+        dueAt: 120,
+        status: "processing",
+        teamRevision: 2,
+        result: {
+          material: "plastic",
+          inputGrade: "C",
+          targetGrade: "B",
+          inputKg: 1_000,
+          outputKg: 700,
+          residueKg: 300,
+          durationMs: 12_000,
+          costCents: 5_000,
+          co2Kg: 90,
+          recoveryRateBasisPoints: 7_000,
+        },
+      },
+    );
+    expect(started?.team.inventory.plastic.C).toBe(0);
+    expect(started?.team.roleInventories.mrf.plastic.C).toBe(0);
+    expect(started?.team.activeQualityUpgrades).toHaveLength(1);
+
+    const completed = applyRealtimeSnapshotPatch(
+      started!,
+      "mrf.quality-upgrade.updated",
+      {
+        qualityUpgradeId: "upgrade-1",
+        materialType: "plastic",
+        status: "completed",
+        teamRevision: 3,
+        result: { outputKg: 700 },
+      },
+    );
+    expect(completed?.team.activeQualityUpgrades).toHaveLength(0);
+    expect(completed?.team.inventory.plastic.B).toBe(700);
+    expect(completed?.team.roleInventories.mrf.plastic.B).toBe(700);
+  });
 });

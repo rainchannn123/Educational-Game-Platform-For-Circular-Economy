@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   HEALTH_MISSIONS,
+  PROJECTS,
   ROLE_QUIZ_QUESTIONS,
   STANDARD_SCENARIO,
 } from "../src/index.js";
@@ -25,9 +26,17 @@ describe("role quiz content", () => {
     }
   });
 
-  it("starts after 30 seconds and gives players 30 seconds to answer", () => {
+  it("starts after 30 seconds, repeats every two minutes, and gives one minute to answer", () => {
     expect(STANDARD_SCENARIO.firstHealthMissionMs).toBe(30_000);
-    expect(STANDARD_SCENARIO.healthMissionMs).toBe(60_000);
-    expect(STANDARD_SCENARIO.healthDeadlineMs).toBe(30_000);
+    expect(STANDARD_SCENARIO.healthMissionMs).toBe(120_000);
+    expect(STANDARD_SCENARIO.healthDeadlineMs).toBe(60_000);
+  });
+
+  it("keeps Grade A critical portions within each project's total requirement", () => {
+    for (const project of PROJECTS)
+      for (const material of ["paper", "plastic", "metal", "glass", "wood"] as const)
+        expect(project.gradeARequiredKg?.[material] ?? 0).toBeLessThanOrEqual(
+          project.requirementsKg[material],
+        );
   });
 });

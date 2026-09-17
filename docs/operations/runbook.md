@@ -24,6 +24,57 @@
 
 5. Optionally create a local facilitator account by setting `SEED_FACILITATOR_PASSWORD` and running `pnpm seed`.
 
+## Full Local Container Stack
+
+The Compose file at `infra/docker/compose.yml` can run the complete platform in containers:
+
+```text
+web      -> http://localhost:3000
+api      -> http://localhost:4000
+worker   -> no public port; schedules and publishes game events
+mongo    -> localhost:27017
+redis    -> localhost:6379
+```
+
+Start Docker Desktop first, then run from the repository root:
+
+```powershell
+docker compose -f infra/docker/compose.yml up --build
+```
+
+The first build downloads Node dependencies and builds the workspace. Later builds reuse Docker cache unless dependency manifests change.
+
+Useful commands:
+
+```powershell
+# Start all services in the background
+docker compose -f infra/docker/compose.yml up --build -d
+
+# Inspect service state
+docker compose -f infra/docker/compose.yml ps
+
+# Follow one service log
+docker compose -f infra/docker/compose.yml logs -f api
+docker compose -f infra/docker/compose.yml logs -f worker
+
+# Stop containers but retain MongoDB/Redis data
+docker compose -f infra/docker/compose.yml down
+
+# Stop and remove local database/cache volumes too
+docker compose -f infra/docker/compose.yml down -v
+```
+
+The API and worker use Docker network hostnames internally:
+
+```text
+MONGODB_URI=mongodb://mongo:27017/clash-of-cities?replicaSet=rs0
+REDIS_URL=redis://redis:6379
+```
+
+The browser still uses `http://localhost:4000` through the web build’s `NEXT_PUBLIC_API_URL` value.
+
+Use `pnpm dev` for ordinary code editing. Use the full Compose stack when testing production-style process separation, networking, worker behavior, or a local deployment rehearsal.
+
 ## Required Runtime Services
 
 | Service | Default endpoint | Why it is required |

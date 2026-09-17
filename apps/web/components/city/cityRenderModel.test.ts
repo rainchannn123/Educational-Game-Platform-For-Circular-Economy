@@ -179,7 +179,7 @@ const snapshot: GameSnapshot = {
         },
         requested: {
           materials: [
-            { materialType: "paper", minimumGrade: "B", quantityKg: 1_000 },
+            { materialType: "paper", grade: "B", quantityKg: 1_000 },
           ],
           cashCents: 0,
         },

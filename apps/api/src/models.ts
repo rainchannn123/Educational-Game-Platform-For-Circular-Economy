@@ -225,6 +225,29 @@ export const ProcessJob: any =
       .index({ status: 1, dueAt: 1 })
       .index({ gameId: 1, teamId: 1, status: 1 }),
   );
+export const QualityUpgradeJob: any =
+  mongoose.models.QualityUpgradeJob ??
+  model(
+    "QualityUpgradeJob",
+    new Schema(
+      {
+        gameId: { type: String, required: true },
+        teamId: { type: String, required: true },
+        commandId: { type: String, required: true },
+        materialType: { type: String, required: true },
+        inputGrade: { type: String, required: true, enum: ["C"] },
+        targetGrade: { type: String, required: true, enum: ["B"] },
+        result: { type: Schema.Types.Mixed, required: true },
+        dueAt: { type: Number, required: true },
+        status: { type: String, default: "processing" },
+        completedAt: Number,
+      },
+      timestamps,
+    )
+      .index({ status: 1, dueAt: 1 })
+      .index({ gameId: 1, teamId: 1, status: 1 })
+      .index({ gameId: 1, teamId: 1, commandId: 1 }, { unique: true }),
+  );
 export const MaterialTransfer: any =
   mongoose.models.MaterialTransfer ??
   model(

@@ -40,6 +40,7 @@ import {
   MaterialTransfer,
   OutboxEvent,
   ProcessJob,
+  QualityUpgradeJob,
   TradeOffer,
   Transport,
   WasteSource,
@@ -970,6 +971,100 @@ async function settleDueEntities(): Promise<void> {
       await session.endSession();
     }
   }
+  for (const job of await QualityUpgradeJob.find({
+    status: "processing",
+    dueAt: { $lte: current },
+  })) {
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const completedJob = await QualityUpgradeJob.findOneAndUpdate(
+          { _id: job._id, status: "processing" },
+          { $set: { status: "completed", completedAt: current } },
+          { new: true, session },
+        ).lean();
+        if (!completedJob) return;
+
+        const result = completedJob.result as {
+          material: Material;
+          inputGrade: "C";
+          targetGrade: "B";
+          inputKg: number;
+          outputKg: number;
+          residueKg: number;
+          costCents: number;
+          co2Kg: number;
+        };
+        if (
+          !result ||
+          result.material !== completedJob.materialType ||
+          result.inputGrade !== "C" ||
+          result.targetGrade !== "B" ||
+          !Number.isInteger(result.outputKg) ||
+          result.outputKg <= 0
+        )
+          throw new Error(`Quality upgrade ${completedJob._id} has an invalid result`);
+
+        const team = await GameTeamState.findOne({
+          gameId: completedJob.gameId,
+          teamId: completedJob.teamId,
+        }).session(session);
+        if (!team)
+          throw new Error(`Quality upgrade ${completedJob._id} has no team state`);
+        if (!team.roleInventories?.mrf) {
+          const defaults = emptyRoleInventories();
+          team.roleInventories = { ...defaults, ...(team.roleInventories ?? {}) };
+        }
+        addMaterial(team.inventory, result.material, "B", result.outputKg);
+        addMaterial(
+          team.roleInventories.mrf,
+          result.material,
+          "B",
+          result.outputKg,
+        );
+        team.markModified("roleInventories");
+        team.revision += 1;
+        await team.save({ session });
+
+        await ActivityEvent.create(
+          [
+            {
+              gameId: completedJob.gameId,
+              teamId: completedJob.teamId,
+              type: "mrf.quality_upgrade_completed",
+              commandId: completedJob.commandId,
+              actorType: "system",
+              occurredAt: current,
+              visibility: "facilitator",
+              payload: {
+                qualityUpgradeId: String(completedJob._id),
+                result,
+              },
+            },
+          ],
+          { session },
+        );
+        await due(
+          completedJob.gameId,
+          "mrf.quality-upgrade.updated",
+          {
+            qualityUpgradeId: String(completedJob._id),
+            materialType: result.material,
+            inputGrade: result.inputGrade,
+            targetGrade: result.targetGrade,
+            status: "completed",
+            result,
+            completedAt: current,
+            teamRevision: team.revision,
+          },
+          `team:${completedJob.gameId}:${completedJob.teamId}`,
+          session,
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
+  }
   for (const held of await WasteSource.find({
     status: "held",
     holdExpiresAt: { $lte: current },
@@ -1073,11 +1168,22 @@ async function settleDueEntities(): Promise<void> {
       { gameId: offer.gameId, teamId: offer.offeringTeamId },
       { $inc: release },
     );
+    const expiredUpdate = {
+      offer: { ...offer.toObject(), status: "expired" },
+      offerId: String(offer._id),
+      status: "expired",
+    };
     await due(
       offer.gameId,
       "trade.offer.updated",
-      { offerId: String(offer._id), status: "expired" },
-      `trade:${offer.gameId}:${String(offer._id)}`,
+      expiredUpdate,
+      `team:${offer.gameId}:${offer.offeringTeamId}`,
+    );
+    await due(
+      offer.gameId,
+      "trade.offer.updated",
+      expiredUpdate,
+      `team:${offer.gameId}:${offer.recipientTeamId}`,
     );
   }
   for (const offer of await TradeOffer.find({
@@ -1107,7 +1213,7 @@ async function settleDueEntities(): Promise<void> {
       offer.settlement?.requestedMaterialTransfers ??
       offer.terms.requested.materials.map((line: any) => ({
         materialType: line.materialType,
-        grade: "B",
+        grade: line.grade,
         quantityKg: line.quantityKg,
       }));
     for (const line of requestedMaterialTransfers)
@@ -1124,11 +1230,22 @@ async function settleDueEntities(): Promise<void> {
           },
         },
       );
+    const deliveryUpdate = {
+      offer: { ...offer.toObject(), status: "completed" },
+      offerId: String(offer._id),
+      status: "completed",
+    };
     await due(
       offer.gameId,
       "trade.delivery.updated",
-      { offerId: String(offer._id), status: "completed" },
-      `trade:${offer.gameId}:${String(offer._id)}`,
+      deliveryUpdate,
+      `team:${offer.gameId}:${offer.offeringTeamId}`,
+    );
+    await due(
+      offer.gameId,
+      "trade.delivery.updated",
+      deliveryUpdate,
+      `team:${offer.gameId}:${offer.recipientTeamId}`,
     );
   }
 }

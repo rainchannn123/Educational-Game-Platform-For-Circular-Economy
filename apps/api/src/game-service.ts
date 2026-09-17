@@ -22,6 +22,7 @@ import {
   availableEligibleKg,
   calculateCollection,
   calculateProcessing,
+  calculateQualityUpgrade,
   emptyInventory,
   healthMissionDelta,
   isTeamHealthRecoveryActive,
@@ -45,6 +46,7 @@ import {
   OutboxEvent,
   ProcessJob,
   ProjectWork,
+  QualityUpgradeJob,
   Team,
   TradeOffer,
   Transport,
@@ -425,8 +427,6 @@ export class GameService {
     this.assertRole(role, "municipality");
     const game = await Game.findById(gameId).lean();
     this.assertStatus(game?.status ?? "", ["active"]);
-    if (state.revision !== expectedRevision)
-      throw new RuleError("STALE_TEAM_REVISION");
     const source = await WasteSource.findOne({
       _id: wasteSourceId,
       gameId,
@@ -448,6 +448,7 @@ export class GameService {
     if (this.spendableWallet(state) < quote.costCents)
       throw new RuleError("INSUFFICIENT_WALLET");
     const session = await mongoose.startSession();
+    let transport: any;
     try {
       await session.withTransaction(async () => {
         const changed = await GameTeamState.updateOne(
@@ -479,7 +480,8 @@ export class GameService {
         );
         if (!sourceChanged.modifiedCount)
           throw new RuleError("WASTE_SOURCE_NOT_AVAILABLE");
-        await Transport.create(
+        transport = (
+          await Transport.create(
           [
             {
               gameId,
@@ -489,8 +491,9 @@ export class GameService {
               arrivesAt,
             },
           ],
-          { session },
-        );
+            { session },
+          )
+        )[0];
         await this.audit(
           gameId,
           state.teamId,
@@ -524,14 +527,21 @@ export class GameService {
       commandId,
       teamRevision: expectedRevision + 1,
       serverTime: now(),
-      result: { wasteSourceId, route, arrivesInMs: quote.durationMs },
+      result: {
+        wasteSourceId,
+        route,
+        transport: transport.toObject(),
+        arrivesInMs: quote.durationMs,
+        costCents: quote.costCents,
+        co2Kg: quote.co2Kg,
+      },
     };
   }
   async startProcess(
     gameId: string,
     userId: string,
     commandId: string,
-    expectedRevision: number,
+    _expectedRevision: number,
     wasteSourceId: string,
     methodId: ProcessingMethodId,
   ): Promise<CommandResult> {
@@ -539,8 +549,6 @@ export class GameService {
     this.assertRole(role, "mrf");
     const game = await Game.findById(gameId).lean();
     this.assertStatus(game?.status ?? "", ["active"]);
-    if (state.revision !== expectedRevision)
-      throw new RuleError("STALE_TEAM_REVISION");
     const source = await WasteSource.findOne({
       _id: wasteSourceId,
       gameId,
@@ -548,28 +556,18 @@ export class GameService {
     }).lean();
     if (!source || source.status !== "held")
       throw new RuleError("WASTE_SOURCE_NOT_AVAILABLE");
-    if (
-      await ProcessJob.exists({
-        gameId,
-        teamId: state.teamId,
-        status: "processing",
-      })
-    )
-      throw new RuleError("MRF_ALREADY_PROCESSING");
     const calculation = calculateProcessing(source as any, methodId);
     const totalCommittedCost = calculation.processingCostCents;
-    if (this.spendableWallet(state) < totalCommittedCost)
-      throw new RuleError("INSUFFICIENT_WALLET");
     const startedAt = now();
     const dueAt = startedAt + calculation.durationMs;
     const session = await mongoose.startSession();
     let jobId = "";
+    let teamRevision = state.revision;
     try {
       await session.withTransaction(async () => {
-        const updated = await GameTeamState.updateOne(
+        const updated = await GameTeamState.findOneAndUpdate(
           {
             _id: state._id,
-            revision: expectedRevision,
             ...this.walletCanCover(totalCommittedCost),
           },
           {
@@ -579,9 +577,10 @@ export class GameService {
               revision: 1,
             },
           },
-          { session },
+          { new: true, session },
         );
-        if (!updated.modifiedCount) throw new RuleError("STALE_TEAM_REVISION");
+        if (!updated) throw new RuleError("INSUFFICIENT_WALLET");
+        teamRevision = updated.revision;
         const sourceChanged = await WasteSource.updateOne(
           { _id: source._id, status: "held" },
           { $set: { status: "processing" } },
@@ -632,7 +631,7 @@ export class GameService {
     }
     return {
       commandId,
-      teamRevision: expectedRevision + 1,
+      teamRevision,
       serverTime: startedAt,
       result: {
         wasteSourceId,
@@ -640,6 +639,125 @@ export class GameService {
         dueAt,
         status: "processing",
         jobId,
+        calculation,
+      },
+    };
+  }
+  async startQualityUpgrade(
+    gameId: string,
+    userId: string,
+    commandId: string,
+    expectedRevision: number,
+    material: Material,
+    inputGrade: "C",
+    targetGrade: "B",
+    inputKg: number,
+  ): Promise<CommandResult> {
+    const { state, role } = await this.member(gameId, userId);
+    this.assertRole(role, "mrf");
+    const game = await Game.findById(gameId).lean();
+    this.assertStatus(game?.status ?? "", ["active"]);
+    if (state.revision !== expectedRevision)
+      throw new RuleError("STALE_TEAM_REVISION");
+
+    const calculation = calculateQualityUpgrade(material, inputKg);
+    if (
+      calculation.inputGrade !== inputGrade ||
+      calculation.targetGrade !== targetGrade
+    )
+      throw new RuleError("QUALITY_UPGRADE_UNAVAILABLE");
+
+    const mrfInventory = this.roleInventory(state, "mrf");
+    const sharedLockedC = state.inventory[material].lockedC ?? 0;
+    const mrfLockedC = mrfInventory[material].lockedC ?? 0;
+    if (
+      state.inventory[material].C - sharedLockedC < inputKg ||
+      mrfInventory[material].C - mrfLockedC < inputKg
+    )
+      throw new RuleError("QUALITY_UPGRADE_UNAVAILABLE");
+    if (this.spendableWallet(state) < calculation.costCents)
+      throw new RuleError("INSUFFICIENT_WALLET");
+
+    const startedAt = now();
+    const dueAt = startedAt + calculation.durationMs;
+    const session = await mongoose.startSession();
+    let qualityUpgrade: any;
+    let teamRevision = expectedRevision;
+    try {
+      await session.withTransaction(async () => {
+        const updated = await GameTeamState.findOneAndUpdate(
+          {
+            _id: state._id,
+            revision: expectedRevision,
+            [`inventory.${material}.C`]: { $gte: sharedLockedC + inputKg },
+            [`roleInventories.mrf.${material}.C`]: {
+              $gte: mrfLockedC + inputKg,
+            },
+            ...this.walletCanCover(calculation.costCents),
+          },
+          {
+            $inc: {
+              walletCents: -calculation.costCents,
+              totalCO2Kg: calculation.co2Kg,
+              [`inventory.${material}.C`]: -inputKg,
+              [`roleInventories.mrf.${material}.C`]: -inputKg,
+              revision: 1,
+            },
+          },
+          { new: true, session },
+        );
+        if (!updated) throw new RuleError("STALE_TEAM_REVISION");
+        teamRevision = updated.revision;
+        [qualityUpgrade] = await QualityUpgradeJob.create(
+          [
+            {
+              gameId,
+              teamId: state.teamId,
+              commandId,
+              materialType: material,
+              inputGrade,
+              targetGrade,
+              result: calculation,
+              dueAt,
+            },
+          ],
+          { session },
+        );
+        await this.audit(
+          gameId,
+          state.teamId,
+          "mrf.quality_upgrade_started",
+          commandId,
+          { userId, role, actorType: "player" },
+          { qualityUpgradeId: String(qualityUpgrade._id), calculation, dueAt },
+          session,
+        );
+        await this.outbox(
+          gameId,
+          "mrf.quality-upgrade.updated",
+          `team:${gameId}:${state.teamId}`,
+          {
+            qualityUpgradeId: String(qualityUpgrade._id),
+            materialType: material,
+            inputGrade,
+            targetGrade,
+            dueAt,
+            status: "processing",
+            result: calculation,
+            teamRevision,
+          },
+          session,
+        );
+      });
+    } finally {
+      await session.endSession();
+    }
+    return {
+      commandId,
+      teamRevision,
+      serverTime: startedAt,
+      result: {
+        qualityUpgrade: qualityUpgrade.toObject(),
         calculation,
       },
     };
@@ -660,6 +778,7 @@ export class GameService {
 
     const session = await mongoose.startSession();
     let separatedMaterialCount = 0;
+    let createdSources: any[] = [];
     try {
       await session.withTransaction(async () => {
         const source = await WasteSource.findOne({
@@ -708,7 +827,8 @@ export class GameService {
           }));
         if (!separatedSources.length)
           throw new RuleError("PROCESSING_METHOD_INCOMPATIBLE");
-        await WasteSource.insertMany(separatedSources, { session });
+        const insertedSources = await WasteSource.insertMany(separatedSources, { session });
+        createdSources = insertedSources.map((entry) => entry.toObject());
         separatedMaterialCount = separatedSources.length;
 
         await this.audit(
@@ -735,7 +855,7 @@ export class GameService {
       commandId,
       teamRevision: expectedRevision + 1,
       serverTime: now(),
-      result: { wasteSourceId, separatedMaterialCount },
+      result: { wasteSourceId, separatedMaterialCount, separatedSources: createdSources },
     };
   }
   async externalPurchase(
@@ -1146,18 +1266,26 @@ export class GameService {
           { projectId, receipt: applied.receipt },
           session,
         );
-        const winnerCity = `City ${teamDoc.citySlot}`;
+        const winnerCityName = membership.team.name;
+        const winnerCity = `City ${winnerCityName}`;
+        const rewards = `${formatAnnouncementMoney(applied.receipt.netRevenueCents)} revenue & ${formatAnnouncementCo2(project.template.co2ImpactKg)}`;
         await this.announce(
           gameId,
           `project-win:${projectId}`,
           "project-win",
-          `${winnerCity} wins the ${project.template.title} project, receiving rewards: ${formatAnnouncementMoney(applied.receipt.netRevenueCents)} revenue & ${formatAnnouncementCo2(project.template.co2ImpactKg)}.`,
+          `${winnerCity} completes the Project ${project.template.title}, gaining ${rewards}!!`,
           {
             projectId,
+            projectTemplateId: project.templateId,
             winnerTeamId: membership.state.teamId,
             winnerCity,
+            winnerCityName,
+            winnerCitySlot: teamDoc.citySlot,
             projectName: project.template.title,
             revenueCents: applied.receipt.netRevenueCents,
+            grossRevenueCents: applied.receipt.grossRevenueCents,
+            netRevenueCents: applied.receipt.netRevenueCents,
+            multiplierBasisPoints: applied.receipt.multiplierBasisPoints,
             co2ImpactKg: project.template.co2ImpactKg,
           },
           session,
@@ -1169,6 +1297,10 @@ export class GameService {
           {
             projectId,
             winnerTeamId: membership.state.teamId,
+            winnerCity,
+            winnerCityName,
+            winnerCitySlot: teamDoc.citySlot,
+            projectName: project.template.title,
             grossRevenueCents: applied.receipt.grossRevenueCents,
             netRevenueCents: applied.receipt.netRevenueCents,
             multiplierBasisPoints: applied.receipt.multiplierBasisPoints,
@@ -1436,41 +1568,28 @@ export class GameService {
           }> = [];
           const receivingInc: Record<string, number> = {};
           for (const line of terms.requested.materials) {
-            let remaining = line.quantityKg;
-            const grades =
-              line.minimumGrade === "A"
-                ? (["A"] as const)
-                : line.minimumGrade === "B"
-                  ? (["B", "A"] as const)
-                  : (["C", "B", "A"] as const);
-            for (const grade of grades) {
-              const key = `${line.materialType}:${grade}`;
-              const quantity = Math.min(
-                Math.max(
-                  0,
-                  receivingBrokerInventory[line.materialType][grade] -
-                    (receivingLocks.get(key) ?? 0),
-                ),
-                remaining,
-              );
-              if (quantity <= 0) continue;
-              receivingInc[`inventory.${line.materialType}.${grade}`] =
-                (receivingInc[`inventory.${line.materialType}.${grade}`] ?? 0) -
-                quantity;
-              receivingInc[
-                `roleInventories.broker.${line.materialType}.${grade}`
-              ] =
-                (receivingInc[
-                  `roleInventories.broker.${line.materialType}.${grade}`
-                ] ?? 0) - quantity;
-              requestedMaterialTransfers.push({
-                materialType: line.materialType,
-                grade,
-                quantityKg: quantity,
-              });
-              remaining -= quantity;
-            }
-            if (remaining > 0) throw new RuleError("PROJECT_REQUIREMENTS_NOT_MET");
+            const key = `${line.materialType}:${line.grade}`;
+            const available = Math.max(
+              0,
+              receivingBrokerInventory[line.materialType][line.grade] -
+                (receivingLocks.get(key) ?? 0),
+            );
+            if (available < line.quantityKg)
+              throw new RuleError("MATERIAL_LOCKED_FOR_TRADE");
+            receivingInc[`inventory.${line.materialType}.${line.grade}`] =
+              (receivingInc[`inventory.${line.materialType}.${line.grade}`] ?? 0) -
+              line.quantityKg;
+            receivingInc[
+              `roleInventories.broker.${line.materialType}.${line.grade}`
+            ] =
+              (receivingInc[
+                `roleInventories.broker.${line.materialType}.${line.grade}`
+              ] ?? 0) - line.quantityKg;
+            requestedMaterialTransfers.push({
+              materialType: line.materialType,
+              grade: line.grade,
+              quantityKg: line.quantityKg,
+            });
           }
 
           const offeredCash = terms.offered.cashCents;
@@ -1529,6 +1648,36 @@ export class GameService {
                   `roleInventories.broker.${line.materialType}.${line.grade}`
                 ] ?? 0) - line.quantityKg;
             }
+          for (const line of terms.offered.materials) {
+            receivingInc[`inventory.${line.materialType}.${line.grade}`] =
+              (receivingInc[`inventory.${line.materialType}.${line.grade}`] ?? 0) +
+              line.quantityKg;
+            receivingInc[
+              `roleInventories.broker.${line.materialType}.${line.grade}`
+            ] =
+              (receivingInc[
+                `roleInventories.broker.${line.materialType}.${line.grade}`
+              ] ?? 0) + line.quantityKg;
+            receivingInc["provenance.tradedKg"] =
+              (receivingInc["provenance.tradedKg"] ?? 0) + line.quantityKg;
+            receivingInc["metrics.tradedKg"] =
+              (receivingInc["metrics.tradedKg"] ?? 0) + line.quantityKg;
+          }
+          for (const line of requestedMaterialTransfers) {
+            offeredInc[`inventory.${line.materialType}.${line.grade}`] =
+              (offeredInc[`inventory.${line.materialType}.${line.grade}`] ?? 0) +
+              line.quantityKg;
+            offeredInc[
+              `roleInventories.broker.${line.materialType}.${line.grade}`
+            ] =
+              (offeredInc[
+                `roleInventories.broker.${line.materialType}.${line.grade}`
+              ] ?? 0) + line.quantityKg;
+            offeredInc["provenance.tradedKg"] =
+              (offeredInc["provenance.tradedKg"] ?? 0) + line.quantityKg;
+            offeredInc["metrics.tradedKg"] =
+              (offeredInc["metrics.tradedKg"] ?? 0) + line.quantityKg;
+          }
           await GameTeamState.updateOne(
             { _id: offering._id },
             { $inc: offeredInc },
@@ -1539,13 +1688,12 @@ export class GameService {
             { $inc: receivingInc },
             { session },
           );
-          const deliveryDueAt = now() + logistics.due;
           await TradeOffer.updateOne(
             { _id: offerId, status: "open" },
             {
               $set: {
-                status: "in-transit",
-                deliveryDueAt,
+                status: "completed",
+                deliveryDueAt: now(),
                 settlement: {
                   serviceFeeCents: {
                     offering: offeringServiceFee,
@@ -1561,7 +1709,7 @@ export class GameService {
           response = {
             commandId,
             serverTime: now(),
-            result: { offerId, status: "in-transit", deliveryDueAt },
+            result: { offerId, status: "completed" },
           };
         }
         await this.audit(
@@ -1573,11 +1721,27 @@ export class GameService {
           { offerId },
           session,
         );
+        const tradeUpdate = {
+          offer: {
+            ...offer,
+            status: response!.result.status,
+            deliveryDueAt: response!.result.status === "completed" ? now() : offer.deliveryDueAt,
+          },
+          ...response!.result,
+          respondingTeamId: membership.state.teamId,
+        };
         await this.outbox(
           gameId,
           "trade.offer.updated",
-          `trade:${gameId}:${offerId}`,
-          response!.result,
+          `team:${gameId}:${offer.offeringTeamId}`,
+          tradeUpdate,
+          session,
+        );
+        await this.outbox(
+          gameId,
+          "trade.offer.updated",
+          `team:${gameId}:${offer.recipientTeamId}`,
+          tradeUpdate,
           session,
         );
       });

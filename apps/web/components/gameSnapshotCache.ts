@@ -114,12 +114,112 @@ export function applyRealtimeSnapshotPatch(
         status: "processing",
       },
     ];
+    const calculation = payload.result as
+      | { processingCostCents?: number; processingCO2Kg?: number }
+      | undefined;
+    if (calculation) {
+      next.team.walletCents -= calculation.processingCostCents ?? 0;
+      next.team.totalCO2Kg += calculation.processingCO2Kg ?? 0;
+    }
+    if (typeof payload.teamRevision === "number")
+      next.team.revision = Math.max(next.team.revision, payload.teamRevision);
+    return next;
+  }
+  if (
+    eventName === "mrf.quality-upgrade.updated" &&
+    payload.status === "processing"
+  ) {
+    const qualityUpgradeId = String(payload.qualityUpgradeId ?? "");
+    const material = payload.materialType as Material | undefined;
+    const result = payload.result as
+      | {
+          inputKg?: number;
+          costCents?: number;
+          co2Kg?: number;
+          inputGrade?: "C";
+          targetGrade?: "B";
+        }
+      | undefined;
+    const dueAt = Number(payload.dueAt ?? 0);
+    if (!qualityUpgradeId || !material || !result || result.inputKg == null || !dueAt)
+      return null;
+    const activeUpgrades = next.team.activeQualityUpgrades ?? [];
+    if (!activeUpgrades.some((entry) => entry._id === qualityUpgradeId)) {
+      next.team.inventory[material].C -= result.inputKg;
+      next.team.roleInventories.mrf[material].C -= result.inputKg;
+      next.team.walletCents -= result.costCents ?? 0;
+      next.team.totalCO2Kg += result.co2Kg ?? 0;
+      next.team.activeQualityUpgrades = [
+        ...activeUpgrades,
+        {
+          _id: qualityUpgradeId,
+          materialType: material,
+          inputGrade: "C",
+          targetGrade: "B",
+          dueAt,
+          status: "processing",
+          result: {
+            material,
+            inputGrade: "C",
+            targetGrade: "B",
+            inputKg: result.inputKg,
+            outputKg: Number((result as any).outputKg ?? 0),
+            residueKg: Number((result as any).residueKg ?? 0),
+            durationMs: Number((result as any).durationMs ?? 0),
+            costCents: result.costCents ?? 0,
+            co2Kg: result.co2Kg ?? 0,
+            recoveryRateBasisPoints: Number(
+              (result as any).recoveryRateBasisPoints ?? 0,
+            ),
+          },
+        },
+      ];
+    }
+    if (typeof payload.teamRevision === "number")
+      next.team.revision = Math.max(next.team.revision, payload.teamRevision);
+    return next;
+  }
+  if (
+    eventName === "mrf.quality-upgrade.updated" &&
+    payload.status === "completed"
+  ) {
+    const qualityUpgradeId = String(payload.qualityUpgradeId ?? "");
+    const material = payload.materialType as Material | undefined;
+    const result = payload.result as { outputKg?: number } | undefined;
+    const outputKg = result?.outputKg;
+    const activeUpgrades = next.team.activeQualityUpgrades ?? [];
+    if (
+      !qualityUpgradeId ||
+      !material ||
+      typeof outputKg !== "number" ||
+      !Number.isInteger(outputKg) ||
+      outputKg <= 0 ||
+      !activeUpgrades.some((entry) => entry._id === qualityUpgradeId)
+    )
+      return null;
+    next.team.activeQualityUpgrades = activeUpgrades.filter(
+      (entry) => entry._id !== qualityUpgradeId,
+    );
+    next.team.inventory[material].B += outputKg;
+    next.team.roleInventories.mrf[material].B += outputKg;
+    if (typeof payload.teamRevision === "number")
+      next.team.revision = Math.max(next.team.revision, payload.teamRevision);
     return next;
   }
   if (eventName === "health-mission.created") {
     const mission = payload.mission as GameSnapshot["team"]["currentHealthMission"];
     if (!mission?._id) return null;
     next.team.currentHealthMission = mission;
+    return next;
+  }
+  if (eventName === "trade.offer.updated" && payload.offer?._id) {
+    const offer = payload.offer;
+    next.trades = appendUnique(next.trades as Array<{ _id: string }>, offer, 100) as any;
+    return next;
+  }
+  if (eventName === "trade.delivery.updated" && payload.offer?._id) {
+    const offer = payload.offer;
+    next.trades = appendUnique(next.trades as Array<{ _id: string }>, offer, 100) as any;
     return next;
   }
   if (

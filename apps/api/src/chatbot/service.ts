@@ -42,6 +42,6 @@ export async function askChatbot(input: {
   return {
     reply,
     sources: retrieved.map(({ source }) => source),
-    provider: "azure-foundry",
+    provider: "openai-compatible",
   };
 }

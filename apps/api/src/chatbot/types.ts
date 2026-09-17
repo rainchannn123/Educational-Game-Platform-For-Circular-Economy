@@ -12,7 +12,7 @@ export type ChatbotSource = {
 export type ChatbotReply = {
   reply: string;
   sources: ChatbotSource[];
-  provider: "azure-foundry";
+  provider: "openai-compatible";
 };
 
 export class ChatbotUnavailableError extends Error {

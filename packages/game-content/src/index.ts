@@ -22,6 +22,7 @@ export interface ProjectTemplate {
   title: string;
   tier: number;
   requirementsKg: MaterialMap;
+  gradeARequiredKg?: MaterialMap;
   grossRevenueCents: number;
   co2ImpactKg: number;
   activeDurationMs: number;
@@ -57,6 +58,15 @@ export interface ProcessingMethodDefinition {
   gradeThresholds?: Array<{ maxContaminationBasisPoints: number; grade: Grade }>;
   healthPenaltyOffset?: number;
 }
+
+export const QUALITY_UPGRADE = {
+  inputGrade: "C" as const,
+  targetGrade: "B" as const,
+  recoveryRateBasisPoints: 7_000,
+  durationMs: 12_000,
+  costCentsPerKg: 5,
+  co2MilliKgPerKg: 90,
+};
 
 export const MATERIALS: Record<Material, MaterialDefinition> = {
   paper: {
@@ -232,11 +242,13 @@ const project = (
   co2Tons: number,
   seconds: number,
   context: string,
+  gradeARequiredKg: Partial<MaterialMap> = {},
 ): ProjectTemplate => ({
   id,
   title,
   tier,
   requirementsKg: { ...EMPTY_MATERIALS, ...r },
+  gradeARequiredKg: { ...EMPTY_MATERIALS, ...gradeARequiredKg },
   grossRevenueCents: dollars * 100,
   co2ImpactKg: co2Tons * 1000,
   activeDurationMs: 180_000,
@@ -362,6 +374,7 @@ export const PROJECTS: ProjectTemplate[] = [
     -3,
     100,
     "Material diversity enables innovation.",
+    { plastic: 500, metal: 500 },
   ),
   project(
     "P13",
@@ -372,6 +385,7 @@ export const PROJECTS: ProjectTemplate[] = [
     -2.8,
     100,
     "Industrial loops retain high-value materials.",
+    { metal: 1000, glass: 500 },
   ),
   project(
     "P14",
@@ -382,6 +396,7 @@ export const PROJECTS: ProjectTemplate[] = [
     -2.4,
     95,
     "Circular schools pair learning and service.",
+    { metal: 500, glass: 500 },
   ),
   project(
     "P15",
@@ -392,6 +407,7 @@ export const PROJECTS: ProjectTemplate[] = [
     0.5,
     95,
     "Construction has a visible carbon trade-off.",
+    { metal: 1000 },
   ),
   project(
     "P16",
@@ -402,6 +418,7 @@ export const PROJECTS: ProjectTemplate[] = [
     -3.6,
     110,
     "A city reuse hub coordinates many loops.",
+    { metal: 1000, plastic: 500 },
   ),
   project(
     "P17",
@@ -412,6 +429,7 @@ export const PROJECTS: ProjectTemplate[] = [
     -4,
     115,
     "Trade can keep recovered material circulating.",
+    { metal: 1000, glass: 500 },
   ),
   project(
     "P18",
@@ -432,6 +450,7 @@ export const PROJECTS: ProjectTemplate[] = [
     -3.2,
     110,
     "Resilient recovery infrastructure protects cities.",
+    { metal: 1000, plastic: 500 },
   ),
   project(
     "P20",
@@ -1085,10 +1104,10 @@ export const STANDARD_SCENARIO = {
   wasteVisibleCap: 4,
   wasteExpiryMs: 55_000,
   mrfQueueCap: 3,
-  healthMissionMs: 60_000,
+  healthMissionMs: 120_000,
   firstHealthMissionMs: 30_000,
-  healthDeadlineMs: 30_000,
-  tradeExpiryMs: 25_000,
+  healthDeadlineMs: 60_000,
+  tradeExpiryMs: 60_000,
   standardTradeMs: 8_000,
   lowCarbonTradeMs: 15_000,
 } as const;

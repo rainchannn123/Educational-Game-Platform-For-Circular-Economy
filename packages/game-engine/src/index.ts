@@ -13,6 +13,7 @@ import {
   EMPTY_MATERIALS,
   MATERIALS,
   PROCESSING_METHOD_BY_ID,
+  QUALITY_UPGRADE,
   STANDARD_SCENARIO,
   type HealthMissionTemplate,
   type ProjectTemplate,
@@ -104,6 +105,18 @@ export interface ProcessResult {
   residueCO2Kg: number;
   healthDelta: number;
 }
+export interface QualityUpgradeResult {
+  material: Material;
+  inputGrade: "C";
+  targetGrade: "B";
+  inputKg: number;
+  outputKg: number;
+  residueKg: number;
+  durationMs: number;
+  costCents: number;
+  co2Kg: number;
+  recoveryRateBasisPoints: number;
+}
 export interface Co2Receipt {
   averageCO2Kg: number;
   winnerCO2Kg: number;
@@ -131,7 +144,7 @@ export interface TradeMaterial {
 }
 export interface TradeRequestMaterial {
   materialType: Material;
-  minimumGrade: Grade;
+  grade: Grade;
   quantityKg: number;
 }
 export interface TradeTerms {
@@ -225,6 +238,30 @@ export const addMaterial = (
 ): void => {
   inventory[material][grade] += quantityKg;
 };
+
+export function calculateQualityUpgrade(
+  material: Material,
+  inputKg: number,
+): QualityUpgradeResult {
+  if (!Number.isInteger(inputKg) || inputKg < 2)
+    throw new RuleError("QUALITY_UPGRADE_UNAVAILABLE");
+  const outputKg = Math.floor(
+    (inputKg * QUALITY_UPGRADE.recoveryRateBasisPoints) / 10_000,
+  );
+  if (outputKg <= 0) throw new RuleError("QUALITY_UPGRADE_UNAVAILABLE");
+  return {
+    material,
+    inputGrade: QUALITY_UPGRADE.inputGrade,
+    targetGrade: QUALITY_UPGRADE.targetGrade,
+    inputKg,
+    outputKg,
+    residueKg: inputKg - outputKg,
+    durationMs: QUALITY_UPGRADE.durationMs,
+    costCents: inputKg * QUALITY_UPGRADE.costCentsPerKg,
+    co2Kg: roundHalfUp(inputKg * QUALITY_UPGRADE.co2MilliKgPerKg, 1000),
+    recoveryRateBasisPoints: QUALITY_UPGRADE.recoveryRateBasisPoints,
+  };
+}
 
 export const sameMaterialMap = (a: MaterialMap, b: MaterialMap): boolean =>
   materialKeys.every((material) => a[material] === b[material]);
@@ -413,16 +450,32 @@ export function createExternalPurchase(
   return next;
 }
 
+const normalizeGradeARequirements = (
+  gradeARequiredKg?: Partial<MaterialMap>,
+): MaterialMap => ({ ...EMPTY_MATERIALS, ...(gradeARequiredKg ?? {}) });
+
 export function consumeProjectMaterials(
   inventory: Inventory,
   required: MaterialMap,
+  gradeARequiredKg?: Partial<MaterialMap>,
 ): Inventory {
   const next = copyInventory(inventory);
-  for (const material of materialKeys)
-    if (availableEligibleKg(next, material) < required[material])
-      throw new RuleError("PROJECT_REQUIREMENTS_NOT_MET");
+  const gradeARequired = normalizeGradeARequirements(gradeARequiredKg);
   for (const material of materialKeys) {
-    let remaining = required[material];
+    const unlockedA = Math.max(
+      0,
+      next[material].A - (next[material].lockedA ?? 0),
+    );
+    if (
+      gradeARequired[material] > required[material] ||
+      unlockedA < gradeARequired[material] ||
+      availableEligibleKg(next, material) < required[material]
+    )
+      throw new RuleError("PROJECT_REQUIREMENTS_NOT_MET");
+  }
+  for (const material of materialKeys) {
+    next[material].A -= gradeARequired[material];
+    let remaining = required[material] - gradeARequired[material];
     const fromB = Math.min(
       Math.max(0, next[material].B - (next[material].lockedB ?? 0)),
       remaining,
@@ -445,11 +498,26 @@ export function consumeProjectMaterials(
 export function consumeProjectRoleInventories(
   roleInventories: RoleInventories,
   required: MaterialMap,
+  gradeARequiredKg?: Partial<MaterialMap>,
 ): RoleInventories {
   const next = structuredClone(roleInventories);
   const roles: Role[] = ["municipality", "mrf", "broker"];
+  const gradeARequired = normalizeGradeARequirements(gradeARequiredKg);
   for (const material of materialKeys) {
-    let remaining = required[material];
+    let premiumRemaining = gradeARequired[material];
+    for (const role of roles) {
+      const available = Math.max(
+        0,
+        next[role][material].A - (next[role][material].lockedA ?? 0),
+      );
+      const consumed = Math.min(available, premiumRemaining);
+      next[role][material].A -= consumed;
+      premiumRemaining -= consumed;
+      if (premiumRemaining === 0) break;
+    }
+    if (premiumRemaining > 0) throw new RuleError("PROJECT_REQUIREMENTS_NOT_MET");
+
+    let remaining = required[material] - gradeARequired[material];
     for (const grade of ["B", "A"] as const) {
       const lockKey = `locked${grade}` as const;
       for (const role of roles) {
@@ -478,7 +546,11 @@ export function assertClaimEligible(
   if (team.status === "withdrawn") throw new RuleError("TEAM_WITHDRAWN");
   if (team.health < 20) throw new RuleError("HEALTH_TOO_LOW_TO_CLAIM");
   if (now > expiresAt) throw new RuleError("PROJECT_NOT_ACTIVE");
-  consumeProjectMaterials(team.inventory, project.requirementsKg);
+  consumeProjectMaterials(
+    team.inventory,
+    project.requirementsKg,
+    project.gradeARequiredKg,
+  );
 }
 
 export function applyProjectClaim(
@@ -496,10 +568,12 @@ export function applyProjectClaim(
   next.roleInventories = consumeProjectRoleInventories(
     next.roleInventories,
     project.requirementsKg,
+    project.gradeARequiredKg,
   );
   next.inventory = consumeProjectMaterials(
     next.inventory,
     project.requirementsKg,
+    project.gradeARequiredKg,
   );
   next.walletCents += receipt.netRevenueCents;
   next.totalCO2Kg = Math.max(0, next.totalCO2Kg + project.co2ImpactKg);
@@ -517,12 +591,12 @@ export function validateTradeTerms(terms: TradeTerms): {
   offeredValueCents: number;
   requestedValueCents: number;
 } {
-  const duplicate = <T extends { materialType: Material; grade?: Grade; minimumGrade?: Grade }>(
+  const duplicate = <T extends { materialType: Material; grade: Grade }>(
     lines: T[],
   ): boolean => {
     const seen = new Set<string>();
     return lines.some((line) => {
-      const key = `${line.materialType}:${line.grade ?? line.minimumGrade}`;
+      const key = `${line.materialType}:${line.grade}`;
       if (seen.has(key)) return true;
       seen.add(key);
       return false;

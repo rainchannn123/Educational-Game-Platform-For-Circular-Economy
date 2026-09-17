@@ -17,6 +17,14 @@ const dnsServersSchema = z
       .filter(Boolean),
   )
   .pipe(z.array(z.string().ip()).min(1));
+const optionalEnvString = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().min(1).optional(),
+);
+const optionalEnvUrl = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().url().optional(),
+);
 const schema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -31,12 +39,18 @@ const schema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((value) => value === "true"),
-  CHATBOT_PROVIDER: z.enum(["disabled", "azure-foundry"]).default("disabled"),
-  CHATBOT_ENDPOINT: z.string().url().optional(),
-  CHATBOT_API_KEY: z.string().optional(),
-  CHATBOT_MODEL_NAME: z.string().min(1).optional(),
-  CHATBOT_API_PATH: z.string().min(1).default("/openai/v1/chat/completions"),
-  CHATBOT_API_VERSION: z.string().min(1).optional(),
+  CHATBOT_PROVIDER: z
+    .enum(["disabled", "openai", "azure-foundry"])
+    .default("disabled"),
+  CHATBOT_ENDPOINT: optionalEnvUrl,
+  CHATBOT_API_KEY: optionalEnvString,
+  CHATBOT_MODEL_NAME: optionalEnvString,
+  MODEL_NAME: optionalEnvString,
+  CHATBOT_API_PATH: z.string().min(1).default("/chat/completions"),
+  CHATBOT_AUTH_MODE: z
+    .enum(["auto", "api-key", "bearer"])
+    .default("auto"),
+  CHATBOT_API_VERSION: optionalEnvString,
   CHATBOT_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(60_000).default(12_000),
   CHATBOT_MAX_TOKENS: z.coerce.number().int().min(64).max(1_000).default(450),
   CHATBOT_SYSTEM_PROMPT: z.string().max(4_000).default(""),

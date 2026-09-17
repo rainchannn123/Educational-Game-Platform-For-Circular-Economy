@@ -3,6 +3,8 @@ services:
     image: mongo:8.0
     command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     ports: ["27017:27017"]
+    volumes:
+      - mongo-data:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
       interval: 5s
@@ -18,3 +20,78 @@ services:
     image: redis:7.4-alpine
     ports: ["6379:6379"]
     command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        APP: api
+    ports: ["4000:4000"]
+    environment: &game-env
+      NODE_ENV: production
+      API_PORT: 4000
+      MONGODB_URI: mongodb://mongo:27017/clash-of-cities?replicaSet=rs0
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-local-development-jwt-secret-change-before-production-12345}
+      WEB_ORIGIN: http://localhost:3000
+      DNS_SERVERS: 8.8.8.8,8.8.4.4
+      CHATBOT_ENABLED: ${CHATBOT_ENABLED:-false}
+      CHATBOT_PROVIDER: ${CHATBOT_PROVIDER:-disabled}
+      CHATBOT_ENDPOINT: ${CHATBOT_ENDPOINT:-}
+      CHATBOT_API_KEY: ${CHATBOT_API_KEY:-}
+      CHATBOT_MODEL_NAME: ${CHATBOT_MODEL_NAME:-}
+      CHATBOT_API_PATH: ${CHATBOT_API_PATH:-/chat/completions}
+      CHATBOT_AUTH_MODE: ${CHATBOT_AUTH_MODE:-auto}
+      CHATBOT_API_VERSION: ${CHATBOT_API_VERSION:-}
+      CHATBOT_TIMEOUT_MS: ${CHATBOT_TIMEOUT_MS:-12000}
+      CHATBOT_MAX_TOKENS: ${CHATBOT_MAX_TOKENS:-450}
+      CHATBOT_SYSTEM_PROMPT: ${CHATBOT_SYSTEM_PROMPT:-}
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        APP: worker
+    environment:
+      <<: *game-env
+    depends_on:
+      mongo-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        APP: web
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+    ports: ["3000:3000"]
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000}
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
+  redis-data:

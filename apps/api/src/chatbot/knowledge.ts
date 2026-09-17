@@ -42,7 +42,7 @@ const KNOWLEDGE: KnowledgeChunk[] = [
     id: "health",
     title: "City Health And Quizzes",
     keywords: ["health", "quiz", "question", "recovery", "wrong", "landfill"],
-    text: "Role quizzes start 30 seconds after the game begins, repeat every minute, and remain open for 30 seconds. Wrong or missed responses can affect City Health. At zero health, the team is locked for 30 seconds before the worker restores health to 20.",
+    text: "Role quizzes start 30 seconds after the game begins, repeat every two minutes, and remain open for 60 seconds. Wrong or missed responses can affect City Health. At zero health, the team is locked for 30 seconds before the worker restores health to 20.",
   },
   {
     id: "communication",

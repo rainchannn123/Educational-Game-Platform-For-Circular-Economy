@@ -34,6 +34,10 @@ The MRF workflow is intentionally two-stage.
 
 This separation is important: recycling one material stream never erases the other materials from the original batch. A mixed paper/plastic batch becomes a paper stream and a plastic stream; each remains available until it is processed.
 
+### 2.1 Upgrade Grade C material
+
+The MRF can spend team funds to re-sort and clean its held **Grade C** material into less **Grade B** material. The server reserves the Grade C input immediately, charges the configured cost and CO2, then the worker credits Grade B output after the timed upgrade completes. The current upgrade yields 700 kg of Grade B material from every 1,000 kg of Grade C input; the difference is residue.
+
 ### 3. Move recovered materials between roles
 
 The team has two related inventory views:
@@ -49,9 +53,11 @@ Project cards appear in the rail at the top of the game screen. Their reward is 
 
 Only Municipality can submit `Complete Project`. MRF and Broker see a disabled `Waiting Muni's action` control. The project requirement is checked against the **shared team inventory**, not a single role’s pocket. When a project succeeds, the server deducts the required materials from shared stock and reconciles the corresponding role allocations, so consumed material cannot later be transferred or traded.
 
+Standard project quantities accept Grade A or B material one-for-one. Higher-tier projects can also identify a smaller **Grade A critical portion** within their total requirement. Grade C cannot directly satisfy a project requirement, but it can be traded, transferred, or upgraded by the MRF.
+
 ### 5. Protect city health
 
-Each role receives a knowledge pop quiz 30 seconds into the match and then every minute. The role-specific question remains open for 30 seconds and uses the supplied 30-question Municipality, MRF, and Broker banks. Correct, wrong, and missed answers use the game’s existing City Health feedback and consequence logic.
+Each role receives a knowledge pop quiz 30 seconds into the match and then every two minutes. The role-specific question remains open for 60 seconds and uses the supplied 30-question Municipality, MRF, and Broker banks. Correct, wrong, and missed answers use the game’s existing City Health feedback and consequence logic.
 
 Missed work, disposal choices, and health-mission outcomes can affect City Health. When health reaches zero, the team enters a server-authoritative 30-second recovery lock. Actions are rejected during recovery, the UI presents a countdown, and the worker restores health to 20 when the deadline is reached.
 
@@ -118,6 +124,8 @@ Every mutation is validated, authorized, and processed on the server. Commands u
    pnpm seed
    ```
 
+For a production-style local run with separate web, API, worker, MongoDB, and Redis containers, see the [full local container stack instructions](docs/operations/runbook.md#full-local-container-stack).
+
 ### Redis retry messages
 
 If development output reports `Redis publisher/subscriber/emitter unavailable; retrying`, Redis is not reachable at `REDIS_URL`, normally `redis://localhost:6379`.
@@ -161,3 +169,32 @@ The current automated coverage includes server idempotency, authorization, Munic
 - [Test matrix](docs/testing/test-matrix.md)
 - [Three.js stage implementation status](docs/product/threejs-circular-city-migration-plan.md)
 - [Historical implementation plan and decisions](docs/product/implementation-plan.md)
+
+
+HEALTH
+Starting health: Teams start at 70 / 100.
+Role pop-quiz answers: Health changes when all three role answers for a quiz are resolved, or when the quiz expires.
+Each correct answer: +3
+Each wrong answer: -2
+Each unanswered role at timeout is treated as wrong/no response: -2
+If all three roles select a correct high-impact answer: additional +1
+Possible quiz outcomes:
+All correct/high-impact: +10
+Three correct but not all high-impact: +9
+Two correct, one wrong: +4
+One correct, two wrong: -1
+All wrong/no response: -6
+Raw waste batch expiry: If a Municipality waste source expires before dispatch:
+Team Health: -4
+MRF landfill choice: Sending a separated material stream to landfill reduces health based on stream mass:
+Under 2,000 kg: -1
+2,000–3,999 kg: -2
+4,000–5,999 kg: -3
+6,000 kg or more: -4
+
+Recommended Implementation Order
+1. Add version-aware snapshot acceptance guard.
+2. Make displayServerTime monotonic.
+3. Add single-flight snapshot refresh coordinator.
+4. Cancel/ignore obsolete responses.
+5. Add tests for out-of-order snapshot responses.

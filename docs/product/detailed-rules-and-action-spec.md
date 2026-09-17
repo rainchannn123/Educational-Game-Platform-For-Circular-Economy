@@ -22,7 +22,7 @@ The game uses five material types:
 | Glass | Green |
 | Wood | Copper |
 
-Recovered material has a grade. Projects use eligible A/B grade stock; role pockets also maintain locks for active trade offers.
+Recovered material has a grade. Grade A and B are project-eligible one-for-one, while Grade C can be transferred or traded but must be upgraded before standard project use. Role pockets also maintain locks for active trade offers.
 
 ## 3. Waste Generation And Municipality Collection
 
@@ -84,6 +84,16 @@ The command accepts a held single-material stream and one compatible method. The
 
 The worker later settles the due job in a transaction. Recycling credits output to shared inventory and the MRF role allocation. It records recovery, residue, CO2, health, provenance, stream completion, parent completion when appropriate, and a durable event together.
 
+### 4.4 Quality upgrade
+
+Only MRF may submit:
+
+```text
+POST /v1/games/:gameId/mrf/quality-upgrades
+```
+
+The command accepts only Grade C inventory held by the MRF and can produce Grade B inventory. The server calculates the 70% output yield, wallet cost, CO2, and 12-second duration. It reserves Grade C from both shared inventory and the MRF allocation at command acceptance, then the worker credits Grade B output to both ledgers at the persisted deadline. The missing mass is recorded as process residue and never becomes usable inventory.
+
 ## 5. Shared Inventory And Role Allocations
 
 The game deliberately distinguishes two ledgers:
@@ -133,10 +143,12 @@ MRF and Broker project controls remain visible but disabled with `Waiting Muni's
 
 Project requirements are validated against **shared inventory**. Stock does not need to be manually moved into Municipality allocation first.
 
+Standard project quantities accept Grade A or B material one-for-one. Some higher-tier listings also include a Grade A critical portion, which is part of the listed total material amount and must be supplied specifically from unlocked Grade A stock.
+
 On a successful claim, the authoritative transaction:
 
 1. verifies Municipality role, project state, team revision, health, and shared grade eligibility;
-2. consumes the required A/B material from shared inventory;
+2. reserves and consumes Grade A stock for any critical portion, then consumes the remaining required A/B material from shared inventory;
 3. consumes the corresponding unlocked material from role allocations in a deterministic order;
 4. awards the CO2-adjusted wallet result;
 5. records the receipt, activity event, announcement, and durable outbox event.
@@ -151,7 +163,7 @@ Project receipts use an authoritative 0.5x to 2.0x multiplier based on the teamâ
 
 ### 8.1 Role knowledge pop quizzes
 
-The game opens the first role-specific pop quiz 30 seconds after active play begins, then opens another every 60 seconds. Each quiz remains answerable for 30 seconds.
+The game opens the first role-specific pop quiz 30 seconds after active play begins, then opens another every two minutes. Each quiz remains answerable for 60 seconds.
 
 - Municipality, MRF, and Broker each receive their own question and four answer choices.
 - The quiz bank contains 30 supplied questions per role. Each city uses a deterministic shuffled deck, so it sees every template before repeating one.
