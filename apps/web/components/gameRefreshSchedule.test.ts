@@ -119,6 +119,16 @@ describe("authoritative refresh schedule", () => {
     });
   });
 
+  it("refreshes exactly when a health recovery reaches its restoration deadline", () => {
+    const data = snapshot();
+    data.team.health = 0;
+    data.team.healthRecoveryUntil = 22_000;
+    expect(nextAuthoritativeRefresh(data, 20_000)).toMatchObject({
+      at: 22_000,
+      reason: "health-recovery",
+    });
+  });
+
   it("refreshes at project activation and quiz expiry boundaries", () => {
     const data = snapshot();
     data.team.currentHealthMission = {

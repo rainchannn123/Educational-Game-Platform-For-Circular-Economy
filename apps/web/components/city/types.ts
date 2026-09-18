@@ -239,7 +239,7 @@ export interface ChatMessage {
 export interface GameAnnouncement {
   _id: string;
   key: string;
-  type: "time" | "project-win";
+  type: "time" | "project-win" | "logistics";
   message: string;
   createdAtMs: number;
   payload?: Record<string, unknown>;

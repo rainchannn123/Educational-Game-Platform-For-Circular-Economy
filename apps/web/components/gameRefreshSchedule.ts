@@ -8,6 +8,7 @@ export type RefreshBoundary = {
     | "quiz-expiry"
     | "mrf-processing"
     | "mrf-quality-upgrade"
+    | "health-recovery"
     | "raw-transport"
     | "material-transfer"
     | "trade-expiry"
@@ -74,6 +75,12 @@ export function nextAuthoritativeRefresh(
       "mrf-quality-upgrade",
       serverNow,
     );
+  boundary = nextBoundary(
+    boundary,
+    snapshot.team.healthRecoveryUntil ?? undefined,
+    "health-recovery",
+    serverNow,
+  );
   for (const trade of snapshot.trades)
     if (trade.status === "open")
       boundary = nextBoundary(boundary, trade.expiresAt, "trade-expiry", serverNow);

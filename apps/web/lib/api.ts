@@ -2,14 +2,23 @@ const apiUrl =
   process.env.NEXT_PUBLIC_API_URL ??
   process.env.NEXT_PUBLIC_SOCKET_URL ??
   "http://localhost:4000";
+const authChangedEvent = "circular-city-auth-changed";
+const notifyAuthChanged = (): void => {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(authChangedEvent));
+};
 export const getToken = (): string | null =>
   typeof window === "undefined"
     ? null
     : sessionStorage.getItem("circular-city-token");
-export const setToken = (token: string): void =>
+export const setToken = (token: string): void => {
   sessionStorage.setItem("circular-city-token", token);
-export const clearToken = (): void =>
+  notifyAuthChanged();
+};
+export const clearToken = (): void => {
   sessionStorage.removeItem("circular-city-token");
+  notifyAuthChanged();
+};
+export { authChangedEvent };
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json");

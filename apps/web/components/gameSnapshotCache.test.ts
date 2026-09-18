@@ -55,6 +55,29 @@ describe("selective game snapshot cache updates", () => {
     expect(next?.chatMessages[0]?.content).toBe("MRF batch is on the way.");
   });
 
+  it("appends and deduplicates a private logistics announcement", () => {
+    const payload = {
+      announcement: {
+        _id: "logistics-1",
+        key: "transfer-1:arrival",
+        type: "logistics" as const,
+        message: "Broker has sent you 1.0 t metal (Grade B) into your inventory. Please check.",
+        createdAtMs: 10,
+      },
+    };
+    const next = applyRealtimeSnapshotPatch(
+      snapshot(),
+      "announcement.created",
+      payload,
+    );
+    const duplicate = applyRealtimeSnapshotPatch(
+      next!,
+      "announcement.created",
+      payload,
+    );
+    expect(duplicate?.announcements).toEqual([payload.announcement]);
+  });
+
   it("moves an arrived source from Municipality transit to the MRF cache", () => {
     const next = applyRealtimeSnapshotPatch(snapshot(), "municipality.transport.updated", { wasteSourceId: "waste-1", status: "at_mrf" });
     expect(next?.team.transports).toHaveLength(0);

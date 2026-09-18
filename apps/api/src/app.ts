@@ -882,7 +882,15 @@ export const createApp = (env: Env = readEnv()): express.Express => {
           .sort({ createdAtMs: -1 })
           .limit(100)
           .lean(),
-        GameAnnouncement.find({ gameId: request.params.gameId })
+        GameAnnouncement.find({
+          gameId: request.params.gameId,
+          $or: [
+            { recipientUserId: { $exists: false } },
+            { recipientUserId: null },
+            { recipientUserId: request.principal!.userId },
+          ],
+        })
+          .select("-recipientUserId")
           .sort({ createdAtMs: -1 })
           .limit(50)
           .lean(),

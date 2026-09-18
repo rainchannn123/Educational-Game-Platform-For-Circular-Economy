@@ -228,8 +228,19 @@ export function GameScreen({
   const previousTeamRef = useRef<GameSnapshot["team"] | null>(null);
   const seenQuizResultMissionIdsRef = useRef<string[]>([]);
   useEffect(() => {
-    const timer = window.setInterval(() => setClock(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
+    let animationFrame = 0;
+    let lastDisplayBucket = Math.floor(Date.now() / 250);
+    const updateClock = () => {
+      const current = Date.now();
+      const displayBucket = Math.floor(current / 250);
+      if (displayBucket !== lastDisplayBucket) {
+        lastDisplayBucket = displayBucket;
+        setClock(current);
+      }
+      animationFrame = window.requestAnimationFrame(updateClock);
+    };
+    animationFrame = window.requestAnimationFrame(updateClock);
+    return () => window.cancelAnimationFrame(animationFrame);
   }, []);
   useEffect(() => {
     monotonicServerTimeRef.current = 0;
@@ -618,7 +629,7 @@ export function GameScreen({
     if (data.viewer.role !== routeRole) return;
     if (data.game.status === "completed") return;
     const mission = data.team.currentHealthMission;
-    const myStep = mission?.steps?.[routeRole];
+    const myStep = mission?.steps?.[data.viewer.role];
     if (!mission || myStep) return;
     const serverNow =
       data.game.serverTime + Math.max(0, clock - snapshot.dataUpdatedAt);
@@ -727,9 +738,8 @@ export function GameScreen({
     ? Math.max(0, team.healthRecoveryUntil - displayServerTime)
     : 0;
   const teamHealthRecovering =
-    typeof team.healthRecoveryUntil === "number"
-      ? recoveryRemaining > 0
-      : team.health <= 0;
+    team.health <= 0 ||
+    (typeof team.healthRecoveryUntil === "number" && recoveryRemaining > 0);
   const rewardMultiplierBasisPoints = team.rewardMultiplierBasisPoints ?? 10_000;
   const freshDelta = (delta: DeltaValue | null | undefined) =>
     delta && clock - delta.at <= 6000 ? delta : null;
@@ -745,7 +755,8 @@ export function GameScreen({
       .filter(Boolean) as Array<[Material, DeltaValue]>,
   ) as Partial<Record<Material, DeltaValue>>;
   const activeMission = team.currentHealthMission;
-  const myMissionStep = activeMission?.steps?.[routeRole];
+  const quizRole = data.viewer.role;
+  const myMissionStep = activeMission?.steps?.[quizRole];
   const activeQuizFeedback =
     quizFeedback && clock < quizFeedback.until ? quizFeedback : null;
   const showQuizFeedback = Boolean(
@@ -1336,7 +1347,7 @@ export function GameScreen({
                 until: Date.now() + 5_000,
               });
             }}
-            role={routeRole}
+            role={quizRole}
             send={send}
           />
         </aside>
@@ -1407,7 +1418,7 @@ function ProjectCompletionReview({
           <div>
             <span>Municipality project review</span>
             <h2 id="project-review-title">{project.template.title}</h2>
-            <p>Tier {project.template.tier} · confirm shared inventory before submitting.</p>
+            <p>Tier {project.template.tier} · Shared stock check</p>
           </div>
           <button
             aria-label="Quit project review"
@@ -1419,104 +1430,80 @@ function ProjectCompletionReview({
           </button>
         </header>
 
-        <section className={styles.projectReward} aria-label="Project reward">
-          <span>Completion reward</span>
-          <strong>{formatMoney(rewardCents)}</strong>
-          <p>
-            {project.template.co2ImpactKg >= 0 ? "+" : "-"}
-            {formatTons(Math.abs(project.template.co2ImpactKg))} CO2e project impact
-          </p>
-          <p>
-            Estimated at {(rewardMultiplierBasisPoints / 10_000).toFixed(2)}x; the server confirms the final reward when claimed.
-          </p>
-        </section>
+        <div className={styles.projectOutcomeGrid}>
+          <section className={styles.projectReward} aria-label="Project reward">
+            <span>Reward</span>
+            <strong>{formatMoney(rewardCents)}</strong>
+            <p>{(rewardMultiplierBasisPoints / 10_000).toFixed(2)}x current multiplier</p>
+          </section>
+          <section
+            className={styles.projectCo2Impact}
+            data-impact={project.template.co2ImpactKg >= 0 ? "emits" : "avoids"}
+            aria-label="Project CO2 impact"
+          >
+            <span>CO2 impact</span>
+            <strong>
+              {project.template.co2ImpactKg >= 0 ? "+" : "-"}
+              {formatTons(Math.abs(project.template.co2ImpactKg))}
+            </strong>
+            <p>{project.template.co2ImpactKg >= 0 ? "emissions" : "avoided emissions"}</p>
+          </section>
+        </div>
 
         <p className={styles.projectReviewHint} id="project-review-description">
-          Only unlocked Grade A and Grade B material can contribute to project completion. Grade C material must be upgraded before it can be used.
+          Eligible: unlocked Grade A + B. Grade C needs an upgrade.
         </p>
 
         <div className={styles.projectReviewTables}>
           <section>
             <div className={styles.projectReviewSectionTitle}>
-              <span>Shared inventory</span>
-              <strong>Current stored material</strong>
+              <span>Shared stock</span>
+              <strong>Stored by grade</strong>
             </div>
-            <div className={styles.projectReviewTableWrap}>
-              <table className={styles.projectReviewTable}>
-                <thead>
-                  <tr>
-                    <th>Material</th>
-                    <th>Grade A</th>
-                    <th>Grade B</th>
-                    <th>Grade C</th>
-                    <th>Unlocked A+B</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {materialRows.map((row) => (
-                    <tr data-material={row.material} key={row.material}>
-                      <th scope="row">
-                        <span className={styles.projectReviewMaterial} data-material={row.material}>
-                          <img src={materialAsset[row.material]} alt="" />
-                          {row.material}
-                        </span>
-                      </th>
-                      <td>{formatTons(row.gradeAStoredKg)}</td>
-                      <td>{formatTons(row.gradeBStoredKg)}</td>
-                      <td>{formatTons(row.gradeCStoredKg)}</td>
-                      <td>{formatTons(row.eligibleKg)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className={styles.projectInventoryGrid}>
+              {materialRows.map((row) => (
+                <article data-material={row.material} key={row.material}>
+                  <div className={styles.projectMaterialCardHeading}>
+                    <img src={materialAsset[row.material]} alt="" />
+                    <strong>{row.material}</strong>
+                    <span>Usable {formatTons(row.eligibleKg)}</span>
+                  </div>
+                  <div className={styles.projectGradeBlocks}>
+                    <span data-grade="A"><small>Grade A</small><b>{formatTons(row.gradeAStoredKg)}</b></span>
+                    <span data-grade="B"><small>Grade B</small><b>{formatTons(row.gradeBStoredKg)}</b></span>
+                    <span data-grade="C"><small>Grade C</small><b>{formatTons(row.gradeCStoredKg)}</b></span>
+                  </div>
+                </article>
+              ))}
             </div>
           </section>
 
           <section>
             <div className={styles.projectReviewSectionTitle}>
-              <span>Project requirements</span>
-              <strong>Required to complete this listing</strong>
+              <span>Project needs</span>
+              <strong>Ready check</strong>
             </div>
-            <div className={styles.projectReviewTableWrap}>
-              <table className={styles.projectReviewTable}>
-                <thead>
-                  <tr>
-                    <th>Material</th>
-                    <th>Total required</th>
-                    <th>Grade A critical (in total)</th>
-                    <th>Unlocked A+B</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {materialRows.map((row) => (
-                    <tr
-                      data-material={row.material}
-                      data-status={row.hasEnoughMaterial ? "ready" : "short"}
-                      key={row.material}
-                    >
-                      <th scope="row">
-                        <span className={styles.projectReviewMaterial} data-material={row.material}>
-                          <img src={materialAsset[row.material]} alt="" />
-                          {row.material}
-                        </span>
-                      </th>
-                      <td>{formatTons(row.requiredKg)}</td>
-                      <td>
-                        {row.gradeARequiredKg > 0
-                          ? formatTons(row.gradeARequiredKg)
-                          : "None"}
-                      </td>
-                      <td>{formatTons(row.eligibleKg)}</td>
-                      <td>
-                        <span className={styles.projectRequirementStatus} data-status={row.hasEnoughMaterial ? "ready" : "short"}>
-                          {row.hasEnoughMaterial ? "Ready" : "Short"}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className={styles.projectRequirementGrid}>
+              {materialRows.map((row) => (
+                <article
+                  data-material={row.material}
+                  data-status={row.hasEnoughMaterial ? "ready" : "short"}
+                  key={row.material}
+                >
+                  <div className={styles.projectMaterialCardHeading}>
+                    <img src={materialAsset[row.material]} alt="" />
+                    <strong>{row.material}</strong>
+                    <span className={styles.projectRequirementStatus} data-status={row.hasEnoughMaterial ? "ready" : "short"}>
+                      {row.hasEnoughMaterial ? "Ready" : "Short"}
+                    </span>
+                  </div>
+                  <div className={styles.projectRequirementBlocks}>
+                    <span><small>Need</small><b>{formatTons(row.requiredKg)}</b></span>
+                    <span><small>Grade A</small><b>{row.gradeARequiredKg > 0 ? formatTons(row.gradeARequiredKg) : "Any"}</b></span>
+                    <span><small>Usable</small><b>{formatTons(row.eligibleKg)}</b></span>
+                  </div>
+                </article>
+              ))}
             </div>
           </section>
         </div>
@@ -1524,10 +1511,10 @@ function ProjectCompletionReview({
         <footer className={styles.projectReviewFooter}>
           <p data-state={hasEnoughMaterials ? "ready" : "short"}>
             {submitFailed
-              ? "The project could not be completed. The listing or authoritative city state may have changed."
+              ? "Claim unavailable. Check live city state."
               : hasEnoughMaterials
-              ? "All material requirements are available."
-              : "More eligible Grade A/B material is needed before this project can be completed."}
+              ? "Materials ready."
+              : "More usable Grade A/B needed."}
           </p>
           <button
             className={styles.projectReviewSubmit}
@@ -1730,7 +1717,11 @@ function AnnouncementChannel({
             key={announcement._id}
           >
             <span>
-              {announcement.type === "project-win" ? "Project result" : "Time update"}
+              {announcement.type === "project-win"
+                ? "Project result"
+                : announcement.type === "logistics"
+                  ? "City logistics"
+                  : "Time update"}
             </span>
             <p>{announcement.message}</p>
             <time>{formatChannelTime(announcement.createdAtMs)}</time>
@@ -3343,6 +3334,8 @@ function RoleQuizPrompt({
   busy: boolean;
   currentTime: number;
 }) {
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const missionTemplate = mission
     ? HEALTH_MISSIONS.find((template) => template.id === mission.templateId)
     : undefined;
@@ -3387,13 +3380,21 @@ function RoleQuizPrompt({
               {missionTemplate?.options?.[role]?.map((option) => (
                 <button
                   key={option.key}
-                  disabled={busy}
+                  disabled={busy || submitting}
                   onClick={async () => {
+                    setSubmitting(true);
+                    setSubmitError(null);
                     const accepted = await send(
                       `/v1/games/${gameId}/health-missions/${mission._id}/steps`,
                       { payload: { optionKey: option.key } },
                     );
-                    if (!accepted) return;
+                    setSubmitting(false);
+                    if (!accepted) {
+                      setSubmitError(
+                        "Your answer was not accepted. The quiz may have expired or already been answered.",
+                      );
+                      return;
+                    }
                     onAnswerResult({
                       missionId: mission._id,
                       status: option.appropriate ? "correct" : "wrong",
@@ -3407,6 +3408,7 @@ function RoleQuizPrompt({
               {!missionTemplate?.options?.[role]?.length && (
                 <p className={styles.quizState}>Options synchronizing...</p>
               )}
+              {submitError && <p className={styles.quizState}>{submitError}</p>}
             </div>
           ) : null}
         </>

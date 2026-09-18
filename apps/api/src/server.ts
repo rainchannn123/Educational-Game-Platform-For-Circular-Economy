@@ -87,6 +87,7 @@ io.on("connection", (socket) => {
       if (!state) return;
       socket.join(`game:${gameId}`);
       socket.join(`team:${gameId}:${state.teamId}`);
+      socket.join(`user:${gameId}:${principal.userId}`);
       const trades = await TradeOffer.find({
         gameId,
         $or: [
@@ -108,9 +109,11 @@ io.on("connection", (socket) => {
       socket.emit("game.snapshot.required", { gameId });
     }
   });
-  socket.on("socket.leave-game", ({ gameId }: { gameId: string }) =>
-    socket.leave(`game:${gameId}`),
-  );
+  socket.on("socket.leave-game", ({ gameId }: { gameId: string }) => {
+    const principal = socket.data.principal as { userId: string };
+    socket.leave(`game:${gameId}`);
+    socket.leave(`user:${gameId}:${principal.userId}`);
+  });
   socket.on(
     "socket.join-trade",
     async ({ gameId, tradeOfferId }: { gameId: string; tradeOfferId: string }) => {

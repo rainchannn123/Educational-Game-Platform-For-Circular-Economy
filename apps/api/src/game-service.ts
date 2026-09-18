@@ -24,6 +24,8 @@ import {
   calculateProcessing,
   calculateQualityUpgrade,
   emptyInventory,
+  HEALTH_RECOVERY_HEALTH,
+  healthStatus,
   healthMissionDelta,
   isTeamHealthRecoveryActive,
   materialKeys,
@@ -69,8 +71,69 @@ const formatAnnouncementMoney = (cents: number): string =>
   }).format(cents / 100);
 const formatAnnouncementCo2 = (kg: number): string =>
   `${kg >= 0 ? "+" : "-"}${(Math.abs(kg) / 1000).toFixed(1)} t CO2e`;
+const formatMaterialTons = (kg: number): string => `${(kg / 1000).toFixed(1)} t`;
+const formatEta = (durationMs: number): string =>
+  durationMs % 60_000 === 0
+    ? `${durationMs / 60_000} minute${durationMs === 60_000 ? "" : "s"}`
+    : `${Math.ceil(durationMs / 1000)} seconds`;
+const roleLabel = (role: Role): string =>
+  ({ municipality: "Municipality", mrf: "MRF", broker: "Broker" })[role];
+const routeLabel = (route: Route): string =>
+  ({
+    express: "Express",
+    standard: "Standard",
+    consolidated: "Consolidated",
+  })[route];
+const formatTradeMaterials = (
+  lines: Array<{ materialType: Material; grade: Grade; quantityKg: number }>,
+): string =>
+  lines
+    .map(
+      (line) =>
+        `${formatMaterialTons(line.quantityKg)} ${line.materialType} (Grade ${line.grade})`,
+    )
+    .join(", ");
 
 export class GameService {
+  private async settleExpiredHealthRecovery(
+    state: Record<string, any>,
+  ): Promise<Record<string, any>> {
+    const current = now();
+    if (
+      state.health > 0 ||
+      typeof state.healthRecoveryUntil !== "number" ||
+      state.healthRecoveryUntil > current
+    )
+      return state;
+    const recovered = await GameTeamState.findOneAndUpdate(
+      {
+        _id: state._id,
+        health: { $lte: 0 },
+        healthRecoveryUntil: { $lte: current },
+      },
+      {
+        $set: {
+          health: HEALTH_RECOVERY_HEALTH,
+          status: healthStatus(HEALTH_RECOVERY_HEALTH),
+        },
+        $unset: { healthRecoveryUntil: 1 },
+        $inc: { revision: 1 },
+      },
+      { new: true },
+    ).lean();
+    if (!recovered) {
+      return (
+        (await GameTeamState.findById(state._id).lean()) ?? state
+      );
+    }
+    await this.outbox(
+      recovered.gameId,
+      "team.health.recovery.completed",
+      `team:${recovered.gameId}:${recovered.teamId}`,
+      { health: HEALTH_RECOVERY_HEALTH },
+    );
+    return recovered;
+  }
   private roleInventory(state: Record<string, any>, role: Role): Inventory {
     return state.roleInventories?.[role] as Inventory;
   }
@@ -221,11 +284,12 @@ export class GameService {
       (item: { userId: string }) => item.userId === userId,
     );
     if (!member?.role) throw new RuleError("ROLE_NOT_SELECTED");
-    const state = await GameTeamState.findOne({
+    let state = await GameTeamState.findOne({
       gameId,
       teamId: String(team._id),
     }).lean();
     if (!state) throw new RuleError("TEAM_STATE_NOT_FOUND");
+    state = await this.settleExpiredHealthRecovery(state);
     if (
       !state.roleInventories?.municipality ||
       !state.roleInventories?.mrf ||
@@ -317,10 +381,11 @@ export class GameService {
   private async announce(
     gameId: string,
     key: string,
-    type: "project-win",
+    type: "project-win" | "logistics",
     message: string,
     payload: Record<string, unknown>,
     session?: ClientSession,
+    recipientUserId?: string,
   ): Promise<void> {
     const announcement = (
       await GameAnnouncement.create(
@@ -331,6 +396,7 @@ export class GameService {
             type,
             message,
             payload,
+            recipientUserId,
             createdAtMs: now(),
           },
         ],
@@ -340,7 +406,9 @@ export class GameService {
     await this.outbox(
       gameId,
       "announcement.created",
-      `game:${gameId}`,
+      recipientUserId
+        ? `user:${gameId}:${recipientUserId}`
+        : `game:${gameId}`,
       { announcement: announcement.toObject() },
       session,
     );
@@ -445,6 +513,9 @@ export class GameService {
     if (queueCount >= 3) throw new RuleError("MRF_QUEUE_FULL");
     const quote = calculateCollection(source as any, route);
     const arrivesAt = now() + quote.durationMs;
+    const mrfUserId = state.memberRoles?.mrf
+      ? String(state.memberRoles.mrf)
+      : undefined;
     if (this.spendableWallet(state) < quote.costCents)
       throw new RuleError("INSUFFICIENT_WALLET");
     const session = await mongoose.startSession();
@@ -487,6 +558,8 @@ export class GameService {
               gameId,
               teamId: state.teamId,
               wasteSourceId,
+              senderUserId: userId,
+              recipientUserId: mrfUserId,
               route,
               arrivesAt,
             },
@@ -518,6 +591,24 @@ export class GameService {
             arrivesAt,
           },
           session,
+        );
+        await this.announce(
+          gameId,
+          `waste-transport:${transport._id}:departure:${userId}`,
+          "logistics",
+          `${formatMaterialTons(source.massKg)} mixed waste is transporting to MRF via ${routeLabel(route)} transport. ETA ${formatEta(quote.durationMs)}.`,
+          {
+            kind: "waste-transport-departure",
+            transportId: String(transport._id),
+            wasteSourceId,
+            fromRole: "municipality",
+            toRole: "mrf",
+            quantityKg: source.massKg,
+            route,
+            arrivesAt,
+          },
+          session,
+          userId,
         );
       });
     } finally {
@@ -975,6 +1066,9 @@ export class GameService {
       throw new RuleError("INSUFFICIENT_WALLET");
     const departedAt = now();
     const arrivesAt = departedAt + quote.durationMs;
+    const recipientUserId = state.memberRoles?.[toRole]
+      ? String(state.memberRoles[toRole])
+      : undefined;
     const inventoryPath = `roleInventories.${fromRole}.${material}.${grade}`;
     const session = await mongoose.startSession();
     let transfer: any;
@@ -1008,6 +1102,8 @@ export class GameService {
                 commandId,
                 fromRole,
                 toRole,
+                senderUserId: userId,
+                recipientUserId,
                 materialType: material,
                 grade,
                 quantityKg,
@@ -1055,6 +1151,25 @@ export class GameService {
             arrivesAt,
           },
           session,
+        );
+        await this.announce(
+          gameId,
+          `material-transfer:${transfer._id}:departure:${userId}`,
+          "logistics",
+          `${formatMaterialTons(quantityKg)} ${material} (Grade ${grade}) is transporting to ${roleLabel(toRole)} via ${routeLabel(route)} transport. ETA ${formatEta(arrivesAt - departedAt)}.`,
+          {
+            kind: "material-transfer-departure",
+            transferId: String(transfer._id),
+            fromRole,
+            toRole,
+            material,
+            grade,
+            quantityKg,
+            route,
+            arrivesAt,
+          },
+          session,
+          userId,
         );
       });
     } finally {
@@ -1408,6 +1523,7 @@ export class GameService {
                 gameId,
                 offeringTeamId: state.teamId,
                 recipientTeamId,
+                createdByUserId: userId,
                 terms,
                 expiresAt: now() + STANDARD_SCENARIO.tradeExpiryMs,
               },
@@ -1693,6 +1809,7 @@ export class GameService {
             {
               $set: {
                 status: "completed",
+                acceptedByUserId: userId,
                 deliveryDueAt: now(),
                 settlement: {
                   serviceFeeCents: {
@@ -1705,6 +1822,63 @@ export class GameService {
               },
             },
             { session },
+          );
+          const offeringBrokerUserId = offer.createdByUserId
+            ? String(offer.createdByUserId)
+            : offering.memberRoles?.broker
+              ? String(offering.memberRoles.broker)
+              : undefined;
+          const receivingBrokerUserId = userId;
+          const announceSettledTradeLeg = async (
+            senderUserId: string | undefined,
+            receiverUserId: string | undefined,
+            lines: TradeTerms["offered"]["materials"],
+            direction: "offered" | "requested",
+          ) => {
+            if (!senderUserId || !receiverUserId || lines.length === 0) return;
+            const materials = formatTradeMaterials(lines);
+            await this.announce(
+              gameId,
+              `trade:${offerId}:${direction}:sender:${senderUserId}`,
+              "logistics",
+              `Trade settled: you sent ${materials} to the other city's Broker. Delivery completed immediately.`,
+              {
+                kind: "trade-material-sent",
+                tradeOfferId: offerId,
+                direction,
+                materials: lines,
+                delivery: "immediate",
+              },
+              session,
+              senderUserId,
+            );
+            await this.announce(
+              gameId,
+              `trade:${offerId}:${direction}:receiver:${receiverUserId}`,
+              "logistics",
+              `Broker has sent you ${materials} through a completed trade. Please check your inventory.`,
+              {
+                kind: "trade-material-arrival",
+                tradeOfferId: offerId,
+                direction,
+                materials: lines,
+                delivery: "immediate",
+              },
+              session,
+              receiverUserId,
+            );
+          };
+          await announceSettledTradeLeg(
+            offeringBrokerUserId,
+            receivingBrokerUserId,
+            terms.offered.materials,
+            "offered",
+          );
+          await announceSettledTradeLeg(
+            receivingBrokerUserId,
+            offeringBrokerUserId,
+            terms.requested.materials,
+            "requested",
           );
           response = {
             commandId,

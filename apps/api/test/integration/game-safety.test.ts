@@ -11,6 +11,7 @@ import {
   ChatMessage,
   Game,
   GameAnnouncement,
+  HealthMission,
   GameProject,
   GameTeamState,
   MaterialTransfer,
@@ -682,6 +683,229 @@ describe("authoritative game safety", () => {
     }).lean();
     expect(updatedState?.roleInventories.mrf.metal.B).toBe(200);
     expect(updatedState?.inventory.metal.B).toBe(500);
+  });
+
+  test("scopes material-transfer logistics notices to their addressed players", async () => {
+    const stamp = Date.now() + 9;
+    const [mrf, municipality, broker] = await User.create([
+      {
+        displayName: "Scoped MRF",
+        email: `scoped-mrf-${stamp}@example.test`,
+        passwordHash: "not-used",
+      },
+      {
+        displayName: "Scoped Municipality",
+        email: `scoped-municipality-${stamp}@example.test`,
+        passwordHash: "not-used",
+      },
+      {
+        displayName: "Scoped Broker",
+        email: `scoped-broker-${stamp}@example.test`,
+        passwordHash: "not-used",
+      },
+    ]);
+    const team = await Team.create({
+      name: "Scoped City",
+      inviteCode: `S${String(stamp).slice(-5)}`,
+      leaderUserId: String(mrf._id),
+      members: [
+        { userId: String(mrf._id), displayName: "Scoped MRF", role: "mrf", ready: true },
+        { userId: String(municipality._id), displayName: "Scoped Municipality", role: "municipality", ready: true },
+        { userId: String(broker._id), displayName: "Scoped Broker", role: "broker", ready: true },
+      ],
+      status: "in-room",
+    });
+    const game = await Game.create({
+      roomId: `room-scoped-${stamp}`,
+      status: "active",
+      startedAt: stamp,
+      activeEndsAt: stamp + 180_000,
+      participantTeamIds: [String(team._id)],
+    });
+    const state = defaultTeam(String(team._id), 1);
+    state.inventory.metal.B = 1_000;
+    state.roleInventories.mrf.metal.B = 1_000;
+    await GameTeamState.create({
+      gameId: String(game._id),
+      teamId: String(team._id),
+      ...state,
+      memberRoles: {
+        municipality: String(municipality._id),
+        mrf: String(mrf._id),
+        broker: String(broker._id),
+      },
+    });
+    const app = createApp(env);
+    const tokenFor = (userId: string) =>
+      signToken({ userId, roles: ["student"] }, env);
+    const dispatched = await request(app)
+      .post(`/v1/games/${game._id}/material-transfers`)
+      .set("authorization", `Bearer ${tokenFor(String(mrf._id))}`)
+      .set("idempotency-key", "00000000-0000-4000-8000-000000000057")
+      .send({
+        commandId: "00000000-0000-4000-8000-000000000057",
+        expectedTeamRevision: 0,
+        payload: {
+          toRole: "municipality",
+          materialType: "metal",
+          grade: "B",
+          quantityKg: 500,
+          route: "standard",
+        },
+      });
+    expect(dispatched.status).toBe(200);
+    const departure = await GameAnnouncement.findOne({
+      gameId: String(game._id),
+      recipientUserId: String(mrf._id),
+      type: "logistics",
+    }).lean();
+    expect(departure?.message).toContain(
+      "0.5 t metal (Grade B) is transporting to Municipality via Standard transport.",
+    );
+    const departureOutbox = await OutboxEvent.findOne({
+      gameId: String(game._id),
+      eventType: "announcement.created",
+      target: `user:${game._id}:${mrf._id}`,
+    }).lean();
+    expect(departureOutbox?.target).toBe(
+      `user:${game._id}:${mrf._id}`,
+    );
+
+    const snapshotFor = (userId: string) =>
+      request(app)
+        .get(`/v1/games/${game._id}/snapshot`)
+        .set("authorization", `Bearer ${tokenFor(userId)}`);
+    expect((await snapshotFor(String(mrf._id))).body.data.announcements).toEqual([
+      expect.objectContaining({ _id: String(departure?._id) }),
+    ]);
+    expect((await snapshotFor(String(municipality._id))).body.data.announcements).toEqual([]);
+    expect((await snapshotFor(String(broker._id))).body.data.announcements).toEqual([]);
+
+    await GameAnnouncement.create({
+      gameId: String(game._id),
+      key: "manual-arrival-for-municipality",
+      type: "logistics",
+      message: "MRF has sent you 0.5 t metal (Grade B) into your inventory. Please check.",
+      recipientUserId: String(municipality._id),
+      createdAtMs: stamp + 1,
+    });
+    expect((await snapshotFor(String(municipality._id))).body.data.announcements).toEqual([
+      expect.objectContaining({
+        message: "MRF has sent you 0.5 t metal (Grade B) into your inventory. Please check.",
+      }),
+    ]);
+    expect((await snapshotFor(String(broker._id))).body.data.announcements).toEqual([]);
+  });
+
+  test("accepts a valid role quiz option through the health-mission command", async () => {
+    const stamp = Date.now() + 10;
+    const user = await User.create({
+      displayName: "Quiz MRF",
+      email: `quiz-mrf-${stamp}@example.test`,
+      passwordHash: "not-used",
+    });
+    const team = await Team.create({
+      name: "Quiz City",
+      inviteCode: `Q${String(stamp).slice(-5)}`,
+      leaderUserId: String(user._id),
+      members: [
+        { userId: String(user._id), displayName: "Quiz MRF", role: "mrf", ready: true },
+      ],
+      status: "in-room",
+    });
+    const game = await Game.create({
+      roomId: `room-quiz-${stamp}`,
+      status: "active",
+      startedAt: stamp,
+      activeEndsAt: stamp + 180_000,
+      participantTeamIds: [String(team._id)],
+    });
+    const state = defaultTeam(String(team._id), 1);
+    await GameTeamState.create({
+      gameId: String(game._id),
+      teamId: String(team._id),
+      ...state,
+      memberRoles: { mrf: String(user._id) },
+    });
+    const mission = await HealthMission.create({
+      gameId: String(game._id),
+      teamId: String(team._id),
+      templateId: "Q01",
+      status: "active",
+      steps: {},
+      expiresAt: stamp + 60_000,
+    });
+    const token = signToken({ userId: String(user._id), roles: ["student"] }, env);
+    const answer = await request(createApp(env))
+      .post(`/v1/games/${game._id}/health-missions/${mission._id}/steps`)
+      .set("authorization", `Bearer ${token}`)
+      .set("idempotency-key", "00000000-0000-4000-8000-000000000058")
+      .send({
+        commandId: "00000000-0000-4000-8000-000000000058",
+        payload: { optionKey: "Q01-mrf-1" },
+      });
+    expect(answer.status).toBe(200);
+    expect(answer.body.data.result).toMatchObject({
+      missionId: String(mission._id),
+      completed: false,
+    });
+    expect(
+      await HealthMission.findById(mission._id).lean(),
+    ).toMatchObject({
+      steps: { mrf: { optionKey: "Q01-mrf-1", userId: String(user._id) } },
+    });
+  });
+
+  test("restores expired recovery health during the authoritative snapshot read", async () => {
+    const stamp = Date.now() + 11;
+    const user = await User.create({
+      displayName: "Recovery City",
+      email: `recovery-city-${stamp}@example.test`,
+      passwordHash: "not-used",
+    });
+    const team = await Team.create({
+      name: "Recovery City",
+      inviteCode: `R${String(stamp).slice(-5)}`,
+      leaderUserId: String(user._id),
+      members: [
+        { userId: String(user._id), displayName: "Recovery City", role: "mrf", ready: true },
+      ],
+      status: "in-room",
+    });
+    const game = await Game.create({
+      roomId: `room-recovery-${stamp}`,
+      status: "active",
+      startedAt: stamp,
+      activeEndsAt: stamp + 180_000,
+      participantTeamIds: [String(team._id)],
+    });
+    const state = defaultTeam(String(team._id), 1);
+    state.health = 0;
+    state.status = "emergency";
+    state.healthRecoveryUntil = stamp - 1;
+    await GameTeamState.create({
+      gameId: String(game._id),
+      teamId: String(team._id),
+      ...state,
+      memberRoles: { mrf: String(user._id) },
+    });
+    const token = signToken({ userId: String(user._id), roles: ["student"] }, env);
+    const response = await request(createApp(env))
+      .get(`/v1/games/${game._id}/snapshot`)
+      .set("authorization", `Bearer ${token}`);
+    expect(response.status).toBe(200);
+    expect(response.body.data.team.health).toBe(20);
+    expect(response.body.data.team.healthRecoveryUntil).toBeUndefined();
+    expect(await GameTeamState.findOne({ gameId: String(game._id) }).lean()).toMatchObject({
+      health: 20,
+      status: "strained",
+    });
+    expect(
+      await OutboxEvent.countDocuments({
+        gameId: String(game._id),
+        eventType: "team.health.recovery.completed",
+      }),
+    ).toBe(1);
   });
 
   test("decomposes a raw MRF batch before starting individual material recovery", async () => {

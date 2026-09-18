@@ -1635,6 +1635,11 @@
   border-color: rgb(255 222 139 / 0.45);
 }
 
+.announcementMessage[data-type="logistics"] {
+  background: linear-gradient(135deg, rgb(56 185 205 / 0.2), rgb(105 138 239 / 0.12));
+  border-color: rgb(117 218 240 / 0.42);
+}
+
 .announcementMessage > span {
   display: block;
   margin-bottom: 0.18rem;
@@ -1647,6 +1652,10 @@
 
 .announcementMessage[data-type="project-win"] > span {
   color: #ffe29a;
+}
+
+.announcementMessage[data-type="logistics"] > span {
+  color: #a9edf8;
 }
 
 .announcementMessage p {
@@ -2608,6 +2617,36 @@
   --material-ink: #ffe0c0;
 }
 
+.projectInventoryGrid article[data-material="paper"],
+.projectRequirementGrid article[data-material="paper"] {
+  --material-color: #e4b14d;
+  --material-ink: #fff0c0;
+}
+
+.projectInventoryGrid article[data-material="plastic"],
+.projectRequirementGrid article[data-material="plastic"] {
+  --material-color: #36c8d4;
+  --material-ink: #c9fbff;
+}
+
+.projectInventoryGrid article[data-material="metal"],
+.projectRequirementGrid article[data-material="metal"] {
+  --material-color: #90b8ec;
+  --material-ink: #e1eeff;
+}
+
+.projectInventoryGrid article[data-material="glass"],
+.projectRequirementGrid article[data-material="glass"] {
+  --material-color: #72d6a9;
+  --material-ink: #d3ffe9;
+}
+
+.projectInventoryGrid article[data-material="wood"],
+.projectRequirementGrid article[data-material="wood"] {
+  --material-color: #df9660;
+  --material-ink: #ffe0c0;
+}
+
 .gameShell .project .projectRequirement {
   color: var(--material-ink);
   background: color-mix(in srgb, var(--material-color) 34%, #123d42);
@@ -2668,7 +2707,8 @@
 
 .projectReviewHeader span,
 .projectReviewSectionTitle span,
-.projectReward > span {
+.projectReward > span,
+.projectCo2Impact > span {
   color: #9de0cc;
   font-size: 0.64rem;
   font-weight: 900;
@@ -2683,7 +2723,8 @@
 }
 
 .projectReviewHeader p,
-.projectReward p {
+.projectReward p,
+.projectCo2Impact p {
   margin: 0;
   color: #c4ddd3;
   font-size: 0.78rem;
@@ -2697,22 +2738,52 @@
   border-color: #eaa18c;
 }
 
-.projectReward {
+.projectOutcomeGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+
+.projectReward,
+.projectCo2Impact {
   display: grid;
   justify-items: center;
   gap: 0.18rem;
-  padding: 1rem;
+  min-height: 6.6rem;
+  padding: 0.75rem;
   text-align: center;
-  background: linear-gradient(135deg, rgb(245 202 99 / 0.24), rgb(255 255 255 / 0.06));
-  border: 1px solid rgb(255 223 138 / 0.46);
-  border-radius: 0.85rem;
+  border-radius: 0.78rem;
 }
 
-.projectReward > strong {
+.projectReward {
+  background: linear-gradient(135deg, rgb(245 202 99 / 0.24), rgb(255 255 255 / 0.06));
+  border: 1px solid rgb(255 223 138 / 0.46);
+}
+
+.projectCo2Impact[data-impact="avoids"] {
+  background: linear-gradient(135deg, rgb(88 214 161 / 0.22), rgb(255 255 255 / 0.05));
+  border: 1px solid rgb(137 236 188 / 0.45);
+}
+
+.projectCo2Impact[data-impact="emits"] {
+  background: linear-gradient(135deg, rgb(239 122 100 / 0.22), rgb(255 255 255 / 0.05));
+  border: 1px solid rgb(255 164 142 / 0.45);
+}
+
+.projectReward > strong,
+.projectCo2Impact > strong {
   color: #fff0af;
-  font-size: clamp(1.65rem, 4vw, 2.55rem);
+  font-size: clamp(1.35rem, 3.3vw, 2.15rem);
   font-variant-numeric: tabular-nums;
   line-height: 1;
+}
+
+.projectCo2Impact[data-impact="avoids"] > strong {
+  color: #b9f9d6;
+}
+
+.projectCo2Impact[data-impact="emits"] > strong {
+  color: #ffd0c2;
 }
 
 .projectReviewHint {
@@ -2737,6 +2808,109 @@
   align-content: start;
   gap: 0.48rem;
   min-width: 0;
+}
+
+.projectInventoryGrid,
+.projectRequirementGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.projectInventoryGrid article,
+.projectRequirementGrid article {
+  display: grid;
+  gap: 0.38rem;
+  padding: 0.52rem;
+  background: color-mix(in srgb, var(--material-color) 12%, #14373d);
+  border: 1px solid color-mix(in srgb, var(--material-color) 48%, rgb(255 255 255 / 0.18));
+  border-radius: 0.65rem;
+}
+
+.projectRequirementGrid article[data-status="short"] {
+  background: linear-gradient(135deg, rgb(154 83 72 / 0.38), color-mix(in srgb, var(--material-color) 12%, #14373d));
+}
+
+.projectMaterialCardHeading {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+.projectMaterialCardHeading img {
+  width: 1.15rem;
+  height: 1.15rem;
+  object-fit: contain;
+  filter: drop-shadow(0 0 0.24rem color-mix(in srgb, var(--material-color) 68%, transparent));
+}
+
+.projectMaterialCardHeading strong {
+  color: var(--material-ink);
+  font-size: 0.86rem;
+  text-transform: capitalize;
+}
+
+.projectMaterialCardHeading > span:not(.projectRequirementStatus) {
+  color: var(--material-ink);
+  font-size: 0.66rem;
+  font-weight: 850;
+  font-variant-numeric: tabular-nums;
+}
+
+.projectGradeBlocks,
+.projectRequirementBlocks {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.28rem;
+}
+
+.projectGradeBlocks > span,
+.projectRequirementBlocks > span {
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.34rem 0.25rem;
+  text-align: center;
+  border-radius: 0.42rem;
+}
+
+.projectGradeBlocks small,
+.projectRequirementBlocks small {
+  font-size: 0.48rem;
+  font-weight: 900;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.projectGradeBlocks b,
+.projectRequirementBlocks b {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.projectGradeBlocks > span[data-grade="A"] {
+  color: #fff1ad;
+  background: rgb(190 142 39 / 0.42);
+}
+
+.projectGradeBlocks > span[data-grade="B"] {
+  color: #c5efff;
+  background: rgb(42 125 176 / 0.42);
+}
+
+.projectGradeBlocks > span[data-grade="C"] {
+  color: #ded5ff;
+  background: rgb(100 76 147 / 0.42);
+}
+
+.projectRequirementBlocks > span {
+  color: #d9f1e8;
+  background: rgb(255 255 255 / 0.09);
+}
+
+.projectRequirementBlocks > span:first-child {
+  color: var(--material-ink);
+  background: color-mix(in srgb, var(--material-color) 33%, #173b41);
 }
 
 .projectReviewSectionTitle {
@@ -3909,6 +4083,12 @@
   }
 
   .projectReviewTables {
+    grid-template-columns: 1fr;
+  }
+
+  .projectOutcomeGrid,
+  .projectInventoryGrid,
+  .projectRequirementGrid {
     grid-template-columns: 1fr;
   }
 

@@ -2,7 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { api, getToken } from "../lib/api";
+import { api, authChangedEvent, getToken } from "../lib/api";
 
 type ActiveGame = { gameId: string; role: string } | null;
 const isLiveGameRoute = (pathname: string): boolean =>
@@ -47,6 +47,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
         defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
       }),
   );
+  useEffect(() => {
+    const clearPrivateCache = () => client.clear();
+    window.addEventListener(authChangedEvent, clearPrivateCache);
+    return () => window.removeEventListener(authChangedEvent, clearPrivateCache);
+  }, [client]);
   return (
     <QueryClientProvider client={client}>
       <ActiveGameRedirect />

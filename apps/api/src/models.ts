@@ -197,6 +197,8 @@ export const Transport: any =
         gameId: String,
         teamId: String,
         wasteSourceId: String,
+        senderUserId: String,
+        recipientUserId: String,
         route: String,
         arrivesAt: Number,
         status: { type: String, default: "in_transit" },
@@ -259,6 +261,8 @@ export const MaterialTransfer: any =
         commandId: { type: String, required: true },
         fromRole: { type: String, required: true },
         toRole: { type: String, required: true },
+        senderUserId: { type: String, required: true },
+        recipientUserId: String,
         materialType: { type: String, required: true },
         grade: { type: String, required: true },
         quantityKg: { type: Number, required: true },
@@ -337,6 +341,8 @@ export const TradeOffer: any =
         gameId: String,
         offeringTeamId: String,
         recipientTeamId: String,
+        createdByUserId: String,
+        acceptedByUserId: String,
         terms: Schema.Types.Mixed,
         status: { type: String, default: "open" },
         parentTradeOfferId: String,
@@ -425,12 +431,14 @@ export const GameAnnouncement: any =
         type: { type: String, required: true },
         message: { type: String, required: true },
         payload: Schema.Types.Mixed,
+        recipientUserId: String,
         createdAtMs: { type: Number, required: true },
       },
       timestamps,
     )
       .index({ gameId: 1, key: 1 }, { unique: true })
-      .index({ gameId: 1, createdAtMs: -1 }),
+      .index({ gameId: 1, createdAtMs: -1 })
+      .index({ gameId: 1, recipientUserId: 1, createdAtMs: -1 }),
   );
 export const ActivityEvent: any =
   mongoose.models.ActivityEvent ??

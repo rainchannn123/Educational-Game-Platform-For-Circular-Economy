@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Emitter } from "@socket.io/redis-emitter";
 import Redis from "ioredis";
 import mongoose from "mongoose";
-import type { Material, ProcessingMethodId } from "@circular-city/contracts";
+import type { Material, ProcessingMethodId, Role } from "@circular-city/contracts";
 import {
   HEALTH_MISSIONS,
   STANDARD_SCENARIO,
@@ -100,6 +100,41 @@ const due = async (
       },
     ],
     { session },
+  );
+};
+const formatMaterialTons = (kg: number): string => `${(kg / 1000).toFixed(1)} t`;
+const roleLabel = (role: Role): string =>
+  ({ municipality: "Municipality", mrf: "MRF", broker: "Broker" })[role];
+const announceUser = async (
+  gameId: string,
+  recipientUserId: string,
+  key: string,
+  message: string,
+  payload: Record<string, unknown>,
+  session?: mongoose.ClientSession,
+): Promise<void> => {
+  const announcement = (
+    await GameAnnouncement.create(
+      [
+        {
+          gameId,
+          key,
+          type: "logistics",
+          message,
+          payload,
+          recipientUserId,
+          createdAtMs: now(),
+        },
+      ],
+      { session },
+    )
+  )[0];
+  await due(
+    gameId,
+    "announcement.created",
+    { announcement: announcement.toObject() },
+    `user:${gameId}:${recipientUserId}`,
+    session,
   );
 };
 const activity = async (
@@ -753,6 +788,15 @@ async function settleDueEntities(): Promise<void> {
           { session },
         );
         if (!transportChanged.modifiedCount) return;
+        const source = await WasteSource.findOne({
+          _id: transport.wasteSourceId,
+          teamId: transport.teamId,
+          status: "in_transit",
+        })
+          .session(session)
+          .lean();
+        if (!source)
+          throw new Error(`Transport source ${transport.wasteSourceId} is unavailable`);
         const sourceChanged = await WasteSource.updateOne(
           {
             _id: transport.wasteSourceId,
@@ -774,6 +818,23 @@ async function settleDueEntities(): Promise<void> {
           `team:${transport.gameId}:${transport.teamId}`,
           session,
         );
+        if (transport.recipientUserId)
+          await announceUser(
+            transport.gameId,
+            String(transport.recipientUserId),
+            `waste-transport:${transport._id}:arrival:${transport.recipientUserId}`,
+            `Municipality has sent you ${formatMaterialTons(source.massKg)} mixed waste into your MRF queue. Please check.`,
+            {
+              kind: "waste-transport-arrival",
+              transportId: String(transport._id),
+              wasteSourceId: transport.wasteSourceId,
+              fromRole: "municipality",
+              toRole: "mrf",
+              quantityKg: source.massKg,
+              route: transport.route,
+            },
+            session,
+          );
       });
     } finally {
       await session.endSession();
@@ -823,6 +884,24 @@ async function settleDueEntities(): Promise<void> {
           `team:${completedTransfer.gameId}:${completedTransfer.teamId}`,
           session,
         );
+        if (completedTransfer.recipientUserId)
+          await announceUser(
+            completedTransfer.gameId,
+            String(completedTransfer.recipientUserId),
+            `material-transfer:${completedTransfer._id}:arrival:${completedTransfer.recipientUserId}`,
+            `${roleLabel(completedTransfer.fromRole)} has sent you ${formatMaterialTons(completedTransfer.quantityKg)} ${completedTransfer.materialType} (Grade ${completedTransfer.grade}) into your inventory. Please check.`,
+            {
+              kind: "material-transfer-arrival",
+              transferId: String(completedTransfer._id),
+              fromRole: completedTransfer.fromRole,
+              toRole: completedTransfer.toRole,
+              material: completedTransfer.materialType,
+              grade: completedTransfer.grade,
+              quantityKg: completedTransfer.quantityKg,
+              route: completedTransfer.route,
+            },
+            session,
+          );
       });
     } finally {
       await session.endSession();
